@@ -271,8 +271,11 @@ async def search_handler(message: Message):
     if c.fetchone():
         return await message.answer("🔒 Access denied. Data is encrypted.")
     # Proceed to API call and HTML generation
-    await message.answer(f"🕷️ Connecting to nodes...
-🧬 Running recon on <code>{query}</code>")
+    await message.answer(
+    f"🕷️ Connecting to nodes...
+"
+    f"🧬 Running recon on <code>{query}</code>"
+    )
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
