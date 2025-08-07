@@ -1,8 +1,0 @@
-services:
-  - type: web
-    name: osint-bot
-    env: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
-    runtime: python-3.10.13
