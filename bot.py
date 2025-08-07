@@ -122,31 +122,52 @@ class AdminStates(StatesGroup):
 # === Handlers ===
 @dp.message(CommandStart())
 async def start_handler(message: Message):
-    full = message.get_full_command()
-    arg = full[1] if len(full)>1 else ''
-    # Deep-link payment
+    # Parse deep-link argument from /start command
+    text = message.text or ''
+    parts = text.split(' ', 1)
+    arg = parts[1] if len(parts) > 1 else ''
+    # Deep-link payment handling
     if arg.startswith('merchant_'):
         parts = arg.split('_')
         if len(parts) >= 6:
             _, token, price, currency, uid_str, plan = parts[:6]
             payload = arg
-            if token==CRYPTOPAY_TOKEN and plan in TARIFFS:
-                c.execute('SELECT 1 FROM payments WHERE payload=?',(payload,))
+            if token == CRYPTOPAY_TOKEN and plan in TARIFFS:
+                c.execute('SELECT 1 FROM payments WHERE payload=?', (payload,))
                 if not c.fetchone():
-                    if plan=='hide_data':
+                    if plan == 'hide_data':
                         c.execute('UPDATE users SET hidden_data=TRUE WHERE id=?', (int(uid_str),))
                     else:
                         days = TARIFFS[plan]['days']
-                        subs = int(time.time())+days*86400
+                        subs = int(time.time()) + days * 86400
                         c.execute(
-                            'INSERT INTO users (id,subs_until,free_used) VALUES (?,?,?) '
-                            'ON CONFLICT(id) DO UPDATE SET subs_until=?',
-                            (int(uid_str),subs,0,subs)
+                            'INSERT INTO users (id,subs_until,free_used) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET subs_until=?',
+                            (int(uid_str), subs, 0, subs)
                         )
                     c.execute('INSERT INTO payments (payload,user_id,plan,paid_at) VALUES (?,?,?,?)',
-                              (payload,int(uid_str),plan,int(time.time())))
+                              (payload, int(uid_str), plan, int(time.time())))
                     conn.commit()
                     await message.answer(f"✅ Plan '{plan}' activated.")
+                    return
+    # Regular /start
+    uid = message.from_user.id
+    c.execute('INSERT INTO users (id,subs_until,free_used,hidden_data) VALUES (?,?,?,?) ON CONFLICT(id) DO NOTHING',
+              (uid, 0, 0, False))
+    conn.commit()
+    if is_admin(uid):
+        text = '<b>As admin, unlimited access.</b>'
+    elif is_subscribed(uid):
+        text = '<b>Your subscription is active.</b>'
+    else:
+        c.execute('SELECT hidden_data, free_used FROM users WHERE id=?', (uid,))
+        hd, fu = c.fetchone()
+        if hd:
+            text = '<b>Your data is hidden.</b>'
+        else:
+            rem = TRIAL_LIMIT - fu
+            text = f'<b>You have {rem} free searches left.</b>' if rem > 0 else '<b>Your trial ended.</b>'
+    await message.answer(f"👾 Welcome to n3лoх!
+{text}", reply_markup=sub_keyboard())f"✅ Plan '{plan}' activated.")
                     return
     # Regular /start
     uid = message.from_user.id
