@@ -1,7 +1,7 @@
 import os
 import logging
 import aiohttp
-import psycopg2
+import sqlite3  # using sqlite3 instead of psycopg2 for simplicity
 import time
 import asyncio
 from datetime import datetime
@@ -39,7 +39,8 @@ FLOOD_LIMIT   = int(os.getenv('FLOOD_LIMIT', '10'))
 FLOOD_INTERVAL= int(os.getenv('FLOOD_INTERVAL', '3'))
 
 # === Database Connection ===
-conn = psycopg2.connect(DATABASE_URL)
+conn = sqlite3.connect('n3lox_users.db', check_same_thread=False)
+c = conn.cursor()
 c = conn.cursor()
 # Create tables if not exist
 c.execute("""
