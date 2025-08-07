@@ -334,8 +334,89 @@ async def search_handler(message: Message):
                 )
         if lines:
             blocks.append(f"<div class='block'><div class='header'>{hdr}</div>{''.join(lines)}</div>")
-    blocks_html = ''.join(blocks)
-        html = f"""
+    blocks_html = ''.join(blocks)    html = f"""<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"UTF-8\">
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+    <title>n3l0x Intelligence Report</title>
+    <style>
+        body {
+            background-color: #0a0a0a;
+            color: #f0f0f0;
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        h1 {
+            text-align: center;
+            color: #00ffcc;
+        }
+        .report {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .block {
+            background-color: #111;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 16px;
+            box-shadow: 0 0 10px rgba(0, 255, 204, 0.3);
+            overflow: auto;
+        }
+        .block h2 {
+            margin-top: 0;
+            font-size: 1.2em;
+            color: #00ffcc;
+        }
+        .block table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        .block table th,
+        .block table td {
+            padding: 8px;
+            border: 1px solid #333;
+            text-align: left;
+        }
+        .block table th {
+            background-color: #222;
+            font-weight: bold;
+        }
+        @media (max-width: 600px) {
+            .report {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>n3l0x Intelligence Report</h1>
+    <div class="report">
+        {''.join(
+            f"""
+        <div class='block'>
+            <h2>Source: {item.get('source', {}).get('database', '?')}</h2>
+            <table>
+                <thead><tr><th>Field</th><th>Value</th></tr></thead>
+                <tbody>
+                    {''.join(
+                        f"<tr><td>{beautify_key(k)}</td><td>{(', '.join(map(str, v)) if isinstance(v, list) else v)}</td></tr>"
+                        for hit in item.get('hits', {}).get('items', []) for k, v in hit.items() if v
+                    )}
+                </tbody>
+            </table>
+        </div>
+            """ for item in result['data']['items'] if item.get('hits', {}).get('items')
+        )}
+    </div>
+</body>
+</html>
+"""
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
