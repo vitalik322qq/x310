@@ -90,7 +90,11 @@ def is_admin(uid: int) -> bool:
 
 def sub_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton('🔒 29 days - $49',  callback_data='buy_month')],
+        [InlineKeyboardButton(text='🔒 29 days - $49',  callback_data='buy_month')],
+        [InlineKeyboardButton(text='🔒 89 days - $120', callback_data='buy_quarter')],
+        [InlineKeyboardButton(text='🔒 Lifetime - $299', callback_data='buy_lifetime')],
+        [InlineKeyboardButton(text='🧊 Hide my data - $100', callback_data='buy_hide_data')]
+    ])],
         [InlineKeyboardButton('🔒 89 days - $120', callback_data='buy_quarter')],
         [InlineKeyboardButton('🔒 Lifetime - $299', callback_data='buy_lifetime')],
         [InlineKeyboardButton('🧊 Hide my data - $100', callback_data='buy_hide_data')]
@@ -184,9 +188,9 @@ async def buy_plan(callback: CallbackQuery):
 async def admin_menu(message: Message):
     if not is_admin(message.from_user.id): return
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton('📊 Give Requests', callback_data='give_requests')],
-        [InlineKeyboardButton('🚫 Block User',    callback_data='block_user')],
-        [InlineKeyboardButton('✅ Unblock User',  callback_data='unblock_user')]
+        [InlineKeyboardButton(text='📊 Give Requests', callback_data='give_requests')],
+        [InlineKeyboardButton(text='🚫 Block User',    callback_data='block_user')],
+        [InlineKeyboardButton(text='✅ Unblock User',  callback_data='unblock_user')]
     ])
     await message.answer('<b>Admin Panel:</b>', reply_markup=kb)
 
