@@ -100,7 +100,7 @@ def sub_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def is_subscribed(uid: int) -> bool:
-    c.execute('SELECT subs_until FROM users WHERE id=%s', (uid,))
+    c.execute('SELECT subs_until FROM users WHERE id=?', (uid,))
     row = c.fetchone()
     return bool(row and row[0] > int(time.time()))
 
