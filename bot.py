@@ -4,6 +4,7 @@ import aiohttp
 import sqlite3
 import time
 import asyncio
+import tempfile
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
@@ -280,7 +281,8 @@ async def search_handler(message: Message):
     if c.fetchone():
         return await message.answer('🔒 Access denied.')
     # API Call
-    await message.answer(f"🕷️ Connecting to nodes...\n🧬 Running recon on <code>{query}</code>")
+    await message.answer(f"🕷️ Connecting to nodes...
+🧬 Running recon on <code>{query}</code>")
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(f"https://api.usersbox.ru/v1/search?q={query}", headers={'Authorization':USERSBOX_API_KEY}, timeout=10) as resp:
@@ -311,13 +313,77 @@ async def search_handler(message: Message):
                 lines.append(f"<div class='row'><span class='key'>{beautify_key(k)}:</span><span class='val'>{val}</span></div>")
         if lines:
             blocks.append(f"<div class='block'><div class='header'>{hdr}</div>{''.join(lines)}</div>")
-    html = f"""<html><head><meta charset='utf-8'><style>body{{background:#0a0a0a;color:#f0f0f0;}}/*...*/</style></head><body>{''.join(blocks)}</body></html>"""
-    filename = f"{query}.html"
-    with open(filename,'w',encoding='utf-8') as f:
-        f.write(html)
+    blocks_html = ''.join(blocks)
+    html = f"""
+    <html>
+    <head>
+        <meta charset='UTF-8'>
+        <title>n3l0x OSINT Report</title>
+        <style>
+            body {{
+                background-color: #0a0a0a;
+                color: #f0f0f0;
+                font-family: 'Courier New', monospace;
+                padding: 20px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+            }}
+            .block {{
+                background-color: #111;
+                border: 1px solid #333;
+                border-radius: 10px;
+                padding: 15px;
+                margin-bottom: 20px;
+                width: 100%;
+                max-width: 800px;
+                box-shadow: 0 0 10px #00ffcc55;
+            }}
+            .header {{
+                font-size: 18px;
+                color: #00ffcc;
+                margin-bottom: 10px;
+                font-weight: bold;
+            }}
+            .row {{
+                display: flex;
+                justify-content: space-between;
+                padding: 6px 0;
+                border-bottom: 1px dotted #444;
+            }}
+            .key {{
+                color: #66ff66;
+                font-weight: bold;
+                min-width: 40%;
+            }}
+            .val {{
+                color: #ff4de6;
+                font-weight: bold;
+                word-break: break-word;
+                text-align: right;
+            }}
+            @media(max-width: 600px) {{
+                .row {{ flex-direction: column; align-items: flex-start; }}
+                .val {{ text-align: left; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <h1 style='color:#00ffcc;'>n3l0x Intelligence Report</h1>
+        {blocks_html}
+    </body>
+    </html>
+    """
+    # Write to /tmp (writable on Koyeb/most serverless)
+    with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html', dir='/tmp', encoding='utf-8') as tf:
+        tf.write(html)
+        tmp_path = tf.name
     await message.answer('Found data, sending report...')
-    await message.answer_document(FSInputFile(filename))
-    os.remove(filename)
+    await message.answer_document(FSInputFile(tmp_path, filename=f"{query}.html"))
+    try:
+        os.remove(tmp_path)
+    except Exception:
+        pass
 
 # Commands
 @dp.message(F.text=='/status')
