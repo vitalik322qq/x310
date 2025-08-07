@@ -128,7 +128,8 @@ async def start_handler(message: Message):
     text = message.text or ''
     parts = text.split(maxsplit=1)
     arg = parts[1] if len(parts)>1 else ''
-    # Handle deep-link payment (deprecated deep-link flow removed).\n# Regular /start
+    # Handle deep-link payment (deprecated deep-link flow removed).
+# Regular /start
     uid = message.from_user.id
     c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
     # store/update username on start
@@ -140,16 +141,13 @@ async def start_handler(message: Message):
     elif is_subscribed(uid):
         welcome_text = '<b>Your subscription is active.</b>'
     else:
-        c.execute('SELECT hidden_data, free_used, trial_expired FROM users WHERE id=?', (uid,))
-        hd, fu, te = c.fetchone()
+        c.execute('SELECT hidden_data, free_used FROM users WHERE id=?', (uid,))
+        hd, fu = c.fetchone()
         if hd:
             welcome_text = '<b>Your data is hidden.</b>'
         else:
-            if te == 1:
-                welcome_text = '<b>Your trial ended.</b>'
-            else:
-                rem = max(0, TRIAL_LIMIT - fu)
-                welcome_text = f'<b>You have {rem} free searches left.</b>' if rem > 0 else '<b>Your trial ended.</b>'
+            rem = TRIAL_LIMIT - fu
+            welcome_text = f'<b>You have {rem} free searches left.</b>' if rem>0 else '<b>Your trial ended.</b>'
     await message.answer(
         f"👾 Welcome to n3лoх!\n{welcome_text}",
         reply_markup=sub_keyboard()
@@ -157,9 +155,10 @@ async def start_handler(message: Message):
 
 @dp.callback_query(F.data.startswith('buy_'))
 async def buy_plan(callback: CallbackQuery):
-    plan = callback.data.split('_',1)[1]
+    plan = callback.data.split('_', 1)[1]
     if plan not in TARIFFS:
         return await callback.answer('Unknown plan', show_alert=True)
+
     price = TARIFFS[plan]['price']
     payload = f"pay_{callback.from_user.id}_{plan}_{int(time.time())}"
     body = {
@@ -171,6 +170,7 @@ async def buy_plan(callback: CallbackQuery):
         'allow_anonymous': True,
         'expires_in': 1800
     }
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -192,17 +192,22 @@ async def buy_plan(callback: CallbackQuery):
     if not url:
         return await callback.message.answer('⚠️ Unexpected Crypto Pay response.')
 
-    # save pending payment record (optional)
+    # Save pending payment (optional)
     try:
-        c.execute('INSERT OR IGNORE INTO payments(payload,user_id,plan,paid_at) VALUES(?,?,?,?)',
-                  (payload, callback.from_user.id, plan, 0))
+        c.execute(
+            'INSERT OR IGNORE INTO payments(payload,user_id,plan,paid_at) VALUES(?,?,?,?)',
+            (payload, callback.from_user.id, plan, 0),
+        )
         conn.commit()
     except Exception:
         pass
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='💳 Pay in CryptoBot', url=url)]])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text='💳 Pay in CryptoBot', url=url)]]
+    )
     await callback.message.answer(
-        f"💳 You chose <b>{plan}</b> — <b>${price}</b> in {BASE_CURRENCY}.\n"
+        f"💳 You chose <b>{plan}</b> — <b>${price}</b> in {BASE_CURRENCY}."
+
         f"Tap the button below to pay via @CryptoBot.",
         reply_markup=kb
     )
@@ -244,48 +249,32 @@ async def unblock_user(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 # New: Reset trial flow
+@dp.callback_query(F.data=='reset_trial')
+async def reset_trial_callback(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return await call.answer('Access denied', show_alert=True)
+    # Acknowledge the button press to stop loading spinner
+    await call.answer()
+    await call.message.answer('🆔 Enter user ID to reset trial:')
+    await state.set_state(AdminStates.wait_reset_id)
 
-@dp.message(AdminStates.wait_user_id)
-async def set_user_id(msg: Message, state: FSMContext):
+@dp.message(AdminStates.wait_reset_id)
+async def reset_trial_execute(msg: Message, state: FSMContext):
     if not msg.text.isdigit():
-        return await msg.answer('ID must be numeric')
-    await state.update_data(uid=int(msg.text))
-    await msg.answer('🔢 Enter number of requests (1-10):')
-    await state.set_state(AdminStates.wait_request_amount)
-
-@dp.message(AdminStates.wait_request_amount)
-async def set_requests(msg: Message, state: FSMContext):
-    if not msg.text.isdigit() or not (1 <= int(msg.text) <= 10):
-        return await msg.answer('Enter a number between 1 and 10')
-    data = await state.get_data()
-    c.execute('INSERT INTO users(id,requests_left) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET requests_left=excluded.requests_left', (data['uid'], int(msg.text)))
+        return await msg.answer('❌ ID must be numeric')
+    uid = int(msg.text)
+    # Reset trial: set used count to cap and mark expired
+    c.execute('UPDATE users SET free_used=?, trial_expired=1 WHERE id=?', (TRIAL_LIMIT, uid))
     conn.commit()
-    uid_set = data.get('uid')
-    await msg.answer(f"✅ Granted {msg.text} requests to user {uid_set}")
-    await state.clear()
-
-@dp.callback_query(F.data.in_(['block_user','unblock_user']))
-async def toggle_block(callback: CallbackQuery, state: FSMContext):
-    mode = callback.data
-    if not is_admin(callback.from_user.id):
-        return await callback.answer('Access denied', show_alert=True)
-    text = 'Enter username to unblock:' if mode=='unblock_user' else 'Enter username to block:'
-    await callback.message.answer(f'👤 {text}')
-    await state.update_data(mode=mode)
-    await state.set_state(AdminStates.wait_username)
-    await callback.answer()
-
-@dp.message(AdminStates.wait_username)
-async def change_block(msg: Message, state: FSMContext):
-    uname = msg.text.strip().lstrip('@')
-    data = await state.get_data()
-    if data.get('mode')=='unblock_user':
-        c.execute('UPDATE users SET is_blocked=0 WHERE username=?', (uname,))
-        await msg.answer(f'✅ Unblocked @{uname}')
-    else:
-        c.execute('UPDATE users SET is_blocked=1 WHERE username=?', (uname,))
-        await msg.answer(f'🚫 Blocked @{uname}')
+    await msg.answer(f'🔄 Trial reset for user {uid}.')
+    await state.clear()(msg: Message, state: FSMContext):
+    if not msg.text.isdigit():
+        return await msg.answer('❌ ID must be numeric')
+    uid = int(msg.text)
+    # Reset trial: set used to max and expire
+    c.execute('UPDATE users SET free_used=?, trial_expired=1 WHERE id=?', (TRIAL_LIMIT, uid))
     conn.commit()
+    await msg.answer(f'🔄 Trial reset for user {uid}.')
     await state.clear()
 
 @dp.message(~F.text.startswith('/'))
@@ -302,9 +291,9 @@ async def search_handler(message: Message):
         return
 
     # Block checks
-    c.execute('SELECT is_blocked, hidden_data, requests_left, free_used, subs_until, trial_expired FROM users WHERE id=?', (uid,))
-    row = c.fetchone() or (0, 0, 0, 0, 0, 0)
-    is_blocked, hidden_data, requests_left, free_used, subs_until, trial_expired = row
+    c.execute('SELECT is_blocked, hidden_data, requests_left, free_used, subs_until FROM users WHERE id=?', (uid,))
+    row = c.fetchone() or (0, 0, 0, 0, 0)
+    is_blocked, hidden_data, requests_left, free_used, subs_until = row
     now = int(time.time())
 
     if is_blocked:
@@ -323,9 +312,6 @@ async def search_handler(message: Message):
         c.execute('UPDATE users SET requests_left=requests_left-1 WHERE id=?', (uid,))
         conn.commit()
     else:
-        # If trial already expired and no subscription, block immediately
-        if subs_until <= now and trial_expired == 1:
-            return await message.answer('🔐 Trial over. Please subscribe.', reply_markup=sub_keyboard())
         # No active sub - consume trial if available
         if subs_until <= now and free_used >= TRIAL_LIMIT:
             c.execute('UPDATE users SET trial_expired=1 WHERE id=?', (uid,))
@@ -333,8 +319,6 @@ async def search_handler(message: Message):
             return await message.answer('🔐 Trial over. Please subscribe.', reply_markup=sub_keyboard())
         if subs_until <= now:
             c.execute('UPDATE users SET free_used=free_used+1 WHERE id=?', (uid,))
-            # If just hit the cap, mark trial expired
-            c.execute('UPDATE users SET trial_expired=1 WHERE id=? AND free_used>=?', (uid, TRIAL_LIMIT))
             conn.commit()
 
     # Blacklist
@@ -344,7 +328,8 @@ async def search_handler(message: Message):
 
     # API Call (safe multiline f-string)
     await message.answer(
-        f"🕷️ Connecting to nodes...\n"
+        f"🕷️ Connecting to nodes..."
+
         f"🧬 Running recon on <code>{query}</code>"
     )
     try:
@@ -472,13 +457,13 @@ async def search_handler(message: Message):
 @dp.message(Command("status"))
 async def status_handler(message: Message):
     uid = message.from_user.id
-    c.execute('SELECT subs_until, free_used, hidden_data, requests_left, trial_expired FROM users WHERE id=?',(uid,))
-    subs_until, free_used, hidden_data, requests_left, trial_expired = c.fetchone() or (0,0,0,0,0)
+    c.execute('SELECT subs_until, free_used, hidden_data, requests_left FROM users WHERE id=?',(uid,))
+    subs_until, free_used, hidden_data, requests_left = c.fetchone() or (0,0,0,0)
     now = int(time.time())
     if hidden_data:
         return await message.answer('🔒 Your data is hidden.')
     sub_status = ('active until '+datetime.fromtimestamp(subs_until).strftime('%Y-%m-%d %H:%M:%S')) if subs_until>now else 'not active'
-    rem_trial = 0 if trial_expired==1 else max(0, TRIAL_LIMIT - free_used)
+    rem_trial = max(0, TRIAL_LIMIT - free_used)
     await message.answer(f"📊 Status:\nSubscription: {sub_status}\nFree left: {rem_trial}\nManual left: {requests_left}")
 
 @dp.message(Command("help"))
