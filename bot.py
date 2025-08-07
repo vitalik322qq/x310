@@ -379,8 +379,7 @@ async def search_handler(message: Message):
              padding:15px;margin-bottom:20px;width:100%;max-width:800px;
              box-shadow:0 0 10px #00ffcc55;}}
     .header {{font-size:18px;color:#00ffcc;margin-bottom:10px;font-weight:bold;}}
-    .row {{display:flex;justify-content:space-between;padding:6px 0;
-            border-bottom:1px dotted #444;}}
+    .row {{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #444;}}
     .key {{color:#66ff66;font-weight:bold;min-width:40%;}}
     .val {{color:#ff4de6;font-weight:bold;word-break:break-word;text-align:right;}}
     @media(max-width:600px){{.row{{flex-direction:column;align-items:flex-start;}}
