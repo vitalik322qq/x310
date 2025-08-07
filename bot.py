@@ -35,7 +35,9 @@ FLOOD_INTERVAL = 3
 # === Init ===
 dp = Dispatcher(storage=MemoryStorage())
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-conn = sqlite3.connect("n3l0x_users.db")
+
+# Используем путь с volume
+conn = sqlite3.connect("/app/data/n3l0x_users.db")
 c = conn.cursor()
 c.execute("""
 CREATE TABLE IF NOT EXISTS users (
