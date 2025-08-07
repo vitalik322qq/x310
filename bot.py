@@ -125,9 +125,9 @@ async def start_handler(message: Message):
     arg = parts[1] if len(parts)>1 else ''
     # Handle deep-link payment
     if arg.startswith('merchant_'):
-        tokens = arg.split('_', 5)
-        if len(tokens)==6:
-            _, token, price, currency, uid_str, plan = tokens
+        parts = arg.split('_')
+        if len(parts) >= 6:
+            _, token, price, currency, uid_str, plan = parts[:6]
             if token==CRYPTOPAY_TOKEN and plan in TARIFFS:
                 c.execute('SELECT 1 FROM payments WHERE payload=?', (arg,))
                 if not c.fetchone():
@@ -148,6 +148,9 @@ async def start_handler(message: Message):
     # Regular /start
     uid = message.from_user.id
     c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
+    # store/update username on start
+    if message.from_user.username:
+        c.execute('UPDATE users SET username=? WHERE id=?', (message.from_user.username, uid))
     conn.commit()
     if is_admin(uid):
         welcome_text = '<b>As admin, unlimited access.</b>'
@@ -214,7 +217,7 @@ async def set_requests(msg: Message, state: FSMContext):
     await msg.answer(f"✅ Granted {msg.text} requests to user {uid_set}")
     await state.clear()
 
-@dp.callback_query(F.data in ['block_user','unblock_user'])
+@dp.callback_query(F.data.in_(['block_user','unblock_user']))
 async def toggle_block(callback: CallbackQuery, state: FSMContext):
     mode = callback.data
     if not is_admin(callback.from_user.id):
@@ -240,6 +243,10 @@ async def change_block(msg: Message, state: FSMContext):
 
 @dp.message()
 async def search_handler(message: Message):
+    # keep username fresh
+    if message.from_user.username:
+        c.execute('UPDATE users SET username=? WHERE id=?', (message.from_user.username, message.from_user.id))
+        conn.commit()
     uid = message.from_user.id
     query = message.text.strip()
     # Block checks
