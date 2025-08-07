@@ -1,0 +1,11 @@
+name: n3l0x
+build:
+  type: python
+  python_version: 3.11
+run:
+  command: bash start.sh
+  watch:
+    paths:
+      - .
+    ignore:
+      - .gitignore
