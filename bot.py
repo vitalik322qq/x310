@@ -166,8 +166,11 @@ async def start_handler(message: Message):
         else:
             rem = TRIAL_LIMIT - fu
             text = f'<b>You have {rem} free searches left.</b>' if rem > 0 else '<b>Your trial ended.</b>'
-    await message.answer(f"👾 Welcome to n3лoх!
-{text}", reply_markup=sub_keyboard())f"✅ Plan '{plan}' activated.")
+    await message.answer(
+    f"👾 Welcome to n3лoх!
+{text}",
+    reply_markup=sub_keyboard()
+))f"✅ Plan '{plan}' activated.")
                     return
     # Regular /start
     uid = message.from_user.id
