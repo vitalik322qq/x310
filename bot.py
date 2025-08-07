@@ -154,9 +154,10 @@ async def start_handler(message: Message):
 
 @dp.callback_query(F.data.startswith('buy_'))
 async def buy_plan(callback: CallbackQuery):
-    plan = callback.data.split('_',1)[1]
+    plan = callback.data.split('_', 1)[1]
     if plan not in TARIFFS:
         return await callback.answer('Unknown plan', show_alert=True)
+
     price = TARIFFS[plan]['price']
     payload = f"pay_{callback.from_user.id}_{plan}_{int(time.time())}"
     body = {
@@ -168,6 +169,7 @@ async def buy_plan(callback: CallbackQuery):
         'allow_anonymous': True,
         'expires_in': 1800
     }
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -179,7 +181,30 @@ async def buy_plan(callback: CallbackQuery):
                 data = await resp.json()
     except Exception as e:
         logging.exception('createInvoice failed: %s', e)
-        return await callback.message.answer(
+        return await callback.message.answer('⚠️ Failed to contact Crypto Pay. Try again later.')
+
+    if not data.get('ok'):
+        return await callback.message.answer(f"⚠️ Crypto Pay error: {data}")
+
+    inv = data['result']
+    url = inv.get('bot_invoice_url') or inv.get('pay_url')
+    if not url:
+        return await callback.message.answer('⚠️ Unexpected Crypto Pay response.')
+
+    # Save pending payment (optional)
+    try:
+        c.execute(
+            'INSERT OR IGNORE INTO payments(payload,user_id,plan,paid_at) VALUES(?,?,?,?)',
+            (payload, callback.from_user.id, plan, 0),
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text='💳 Pay in CryptoBot', url=url)]]
+    )
+    await callback.message.answer(
         f"💳 You chose <b>{plan}</b> — <b>${price}</b> in {BASE_CURRENCY}."
 
         f"Tap the button below to pay via @CryptoBot.",
