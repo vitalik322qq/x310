@@ -94,10 +94,6 @@ def sub_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text='🔒 89 days - $120', callback_data='buy_quarter')],
         [InlineKeyboardButton(text='🔒 Lifetime - $299', callback_data='buy_lifetime')],
         [InlineKeyboardButton(text='🧊 Hide my data - $100', callback_data='buy_hide_data')]
-    ])],
-        [InlineKeyboardButton('🔒 89 days - $120', callback_data='buy_quarter')],
-        [InlineKeyboardButton('🔒 Lifetime - $299', callback_data='buy_lifetime')],
-        [InlineKeyboardButton('🧊 Hide my data - $100', callback_data='buy_hide_data')]
     ])
 
 def is_subscribed(uid: int) -> bool:
