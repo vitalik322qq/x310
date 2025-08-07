@@ -199,8 +199,8 @@ async def buy_plan(callback: CallbackQuery):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='💳 Pay in CryptoBot', url=url)]])
     await callback.message.answer(
-        f"💳 You chose <b>{plan}</b> — <b>${price}</b> in {BASE_CURRENCY}.
-"
+        f"💳 You chose <b>{plan}</b> — <b>${price}</b> in {BASE_CURRENCY}."
+
         f"Tap the button below to pay via @CryptoBot.",
         reply_markup=kb
     )
