@@ -10,11 +10,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 from datetime import datetime
 import os
-import asyncio
 
 # === Settings ===
 BOT_TOKEN = "8449359446:AAFdrzGXh_45uPMuljM5IR59AmdXhimAM_k"
-USERSBOX_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+USERSBOX_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjcmVhdGVkX2F0IjoxNzU0MzM5MzkxLCJhcHBfaWQiOjE3NTQzMzkzOTF9.v4td4yMijevAt6WE7IUtkLkCfiZ1k-cF3bpUGNedng8"
 CRYPTOPAY_TOKEN = "441337:AAqgjWaWbcDpk07XquOwGL3ki4fZNXzJtyL"
 OWNER_ID = 8069798171
 BASE_CURRENCY = "USDT"
@@ -34,11 +33,8 @@ FLOOD_INTERVAL = 3
 # === Init ===
 dp = Dispatcher(storage=MemoryStorage())
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-DB_PATH = os.path.join(os.getcwd(), "n3l0x_users.db")
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+conn = sqlite3.connect("n3l0x_users.db")
 c = conn.cursor()
-
-# Создание таблиц
 c.execute("""
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
@@ -173,24 +169,75 @@ async def search_handler(message: Message):
             for k, v in hit.items():
                 if not v:
                     continue
-                val = ", ".join(str(i) for i in v) if isinstance(v, list) else str(v)
+                val = ", ".join(str(i) if not isinstance(i, dict) else str(i) for i in v) if isinstance(v, list) else str(v)
                 lines.append(f"<div class='row'><span class='key'>{beautify_key(k)}:</span><span class='val'>{val}</span></div>")
         if lines:
             blocks.append(f"<div class='block'><div class='header'>{header}</div>{''.join(lines)}</div>")
 
-    # Сохраняем во временную папку
-    filename = f"/tmp/{query}.html"
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(f"""
-        <html><head><meta charset='UTF-8'><title>n3l0x OSINT Report</title><style>
-        body {{ background:#000;color:#0f0;font-family:monospace;padding:20px }}
-        .block {{ border:1px solid #0f0;padding:10px;margin:10px }}
-        .key {{ color:#6f6; }} .val {{ color:#f6f; float:right }}
-        </style></head><body>
-        <h1>n3l0x Intelligence Report</h1>
+    html = f"""
+    <html>
+    <head>
+        <meta charset='UTF-8'>
+        <title>n3l0x OSINT Report</title>
+        <style>
+            body {{
+                background-color: #0a0a0a;
+                color: #f0f0f0;
+                font-family: 'Courier New', monospace;
+                padding: 20px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+            }}
+            .block {{
+                background-color: #111;
+                border: 1px solid #333;
+                border-radius: 10px;
+                padding: 15px;
+                margin-bottom: 20px;
+                width: 100%;
+                max-width: 800px;
+                box-shadow: 0 0 10px #00ffcc55;
+            }}
+            .header {{
+                font-size: 18px;
+                color: #00ffcc;
+                margin-bottom: 10px;
+                font-weight: bold;
+            }}
+            .row {{
+                display: flex;
+                justify-content: space-between;
+                padding: 6px 0;
+                border-bottom: 1px dotted #444;
+            }}
+            .key {{
+                color: #66ff66;
+                font-weight: bold;
+                min-width: 40%;
+            }}
+            .val {{
+                color: #ff4de6;
+                font-weight: bold;
+                word-break: break-word;
+                text-align: right;
+            }}
+            @media(max-width: 600px) {{
+                .row {{ flex-direction: column; align-items: flex-start; }}
+                .val {{ text-align: left; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <h1 style='color:#00ffcc;'>n3l0x Intelligence Report</h1>
         {''.join(blocks)}
-        </body></html>
-        """)
+    </body>
+    </html>
+    """
+
+    filename = f"{query}.html"
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(html)
 
     await message.answer("Нашел кента. Держи файл:")
     await message.answer_document(FSInputFile(filename))
@@ -219,4 +266,5 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())
