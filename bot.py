@@ -261,6 +261,9 @@ async def search_handler(message: Message):
         return await message.answer('🚫 This user data is hidden.')
     if query in ADMIN_HIDDEN:
         return await message.answer('🚫 This query is prohibited.')
+    # Flood check (run before consuming limits)
+    if check_flood(uid):
+        return await message.answer('⛔ Flood detected. Try again later.')
     # Use manual requests first
     if requests_left > 0:
         c.execute('UPDATE users SET requests_left=requests_left-1 WHERE id=?', (uid,))
@@ -273,10 +276,7 @@ async def search_handler(message: Message):
         if subs_until <= now:
             c.execute('UPDATE users SET free_used=free_used+1 WHERE id=?', (uid,))
             conn.commit()
-    # Flood check
-    if check_flood(uid):
-        return await message.answer('⛔ Flood detected. Try again later.')
-    # Blacklist
+        # Blacklist
     c.execute('SELECT 1 FROM blacklist WHERE value=?', (query,))
     if c.fetchone():
         return await message.answer('🔒 Access denied.')
