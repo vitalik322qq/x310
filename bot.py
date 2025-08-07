@@ -41,7 +41,6 @@ FLOOD_INTERVAL= int(os.getenv('FLOOD_INTERVAL', '3'))
 # === Database Connection ===
 conn = sqlite3.connect('n3lox_users.db', check_same_thread=False)
 c = conn.cursor()
-c = conn.cursor()
 # Create tables if not exist
 c.execute("""
 CREATE TABLE IF NOT EXISTS users (
@@ -105,12 +104,12 @@ def is_subscribed(uid: int) -> bool:
     return bool(row and row[0] > int(time.time()))
 
 def check_flood(uid: int) -> bool:
-    c.execute('SELECT last_queries FROM users WHERE id=%s', (uid,))
+    c.execute('SELECT last_queries FROM users WHERE id=?', (uid,))
     row = c.fetchone()
     now = int(time.time())
     times = [int(t) for t in (row[0] or '').split(',') if t] + [now]
     recent = [t for t in times if now - t <= FLOOD_WINDOW]
-    c.execute('UPDATE users SET last_queries=%s WHERE id=%s', (','.join(map(str,recent)), uid))
+    c.execute('UPDATE users SET last_queries=? WHERE id=?', (','.join(map(str,recent)), uid))
     conn.commit()
     return len(recent) > FLOOD_LIMIT or (len(recent)>=2 and recent[-1]-recent[-2]<FLOOD_INTERVAL)
 
@@ -132,26 +131,26 @@ async def start_handler(message: Message):
             _, token, price, currency, uid_str, plan = parts[:6]
             payload = arg
             if token==CRYPTOPAY_TOKEN and plan in TARIFFS:
-                c.execute('SELECT 1 FROM payments WHERE payload=%s',(payload,))
+                c.execute('SELECT 1 FROM payments WHERE payload=?',(payload,))
                 if not c.fetchone():
                     if plan=='hide_data':
-                        c.execute('UPDATE users SET hidden_data=TRUE WHERE id=%s', (int(uid_str),))
+                        c.execute('UPDATE users SET hidden_data=TRUE WHERE id=?', (int(uid_str),))
                     else:
                         days = TARIFFS[plan]['days']
                         subs = int(time.time())+days*86400
                         c.execute(
-                            'INSERT INTO users (id,subs_until,free_used) VALUES (%s,%s,%s) '
-                            'ON CONFLICT(id) DO UPDATE SET subs_until=%s',
+                            'INSERT INTO users (id,subs_until,free_used) VALUES (?,?,?) '
+                            'ON CONFLICT(id) DO UPDATE SET subs_until=?',
                             (int(uid_str),subs,0,subs)
                         )
-                    c.execute('INSERT INTO payments (payload,user_id,plan,paid_at) VALUES (%s,%s,%s,%s)',
+                    c.execute('INSERT INTO payments (payload,user_id,plan,paid_at) VALUES (?,?,?,?)',
                               (payload,int(uid_str),plan,int(time.time())))
                     conn.commit()
                     await message.answer(f"✅ Plan '{plan}' activated.")
                     return
     # Regular /start
     uid = message.from_user.id
-    c.execute('INSERT INTO users (id,subs_until,free_used,hidden_data) VALUES (%s,%s,%s,%s) ON CONFLICT(id) DO NOTHING',
+    c.execute('INSERT INTO users (id,subs_until,free_used,hidden_data) VALUES (?,?,?,?) ON CONFLICT(id) DO NOTHING',
               (uid,0,0,False))
     conn.commit()
     if is_admin(uid):
@@ -159,7 +158,7 @@ async def start_handler(message: Message):
     elif is_subscribed(uid):
         text='<b>Your subscription is active.</b>'
     else:
-        c.execute('SELECT hidden_data, free_used FROM users WHERE id=%s',(uid,))
+        c.execute('SELECT hidden_data, free_used FROM users WHERE id=?',(uid,))
         hd,fu = c.fetchone()
         if hd:
             text='<b>Your data is hidden.</b>'
@@ -208,7 +207,7 @@ async def set_requests(msg: Message, state: FSMContext):
     if not msg.text.isdigit(): return await msg.answer('Must be number')
     data=await state.get_data(); userid=data['uid']; cnt=int(msg.text)
     if cnt<1 or cnt>10: return await msg.answer('1-10 only')
-    c.execute('INSERT INTO users(id,requests_left) VALUES(%s,%s) ON CONFLICT(id) DO UPDATE SET requests_left=%s',
+    c.execute('INSERT INTO users(id,requests_left) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET requests_left=?',
               (userid,cnt,cnt))
     conn.commit(); await msg.answer(f'Granted {cnt} to {userid}'); await state.clear()
 
@@ -233,10 +232,10 @@ async def change_block(msg: Message, state: FSMContext):
     # last callback tells mode
     mode = msg.reply_to_message and msg.reply_to_message.text.lower().startswith('👤 enter username to unblock')
     if mode:
-        c.execute('UPDATE users SET is_blocked=FALSE WHERE username=%s',(uname,))
+        c.execute('UPDATE users SET is_blocked=FALSE WHERE username=?',(uname,))
         await msg.answer(f'✅ Unblocked @{uname}')
     else:
-        c.execute('UPDATE users SET is_blocked=TRUE WHERE username=%s',(uname,))
+        c.execute('UPDATE users SET is_blocked=TRUE WHERE username=?',(uname,))
         await msg.answer(f'🚫 Blocked @{uname}')
     conn.commit(); await state.clear()
 
@@ -244,30 +243,30 @@ async def change_block(msg: Message, state: FSMContext):
 async def search_handler(message: Message):
     uid=message.from_user.id; query=message.text.strip()
     # blocked?
-    c.execute('SELECT is_blocked FROM users WHERE id=%s',(uid,))
+    c.execute('SELECT is_blocked FROM users WHERE id=?',(uid,))
     if c.fetchone()[0]: return await message.answer('🚫 You are blocked.')
     # hidden data?
-    c.execute('SELECT hidden_data FROM users WHERE id=%s',(uid,))
+    c.execute('SELECT hidden_data FROM users WHERE id=?',(uid,))
     if c.fetchone()[0]: return await message.answer('🚫 This user data is hidden.')
     # admin hidden
     if query in ADMIN_HIDDEN: return await message.answer('Этого кента нельзя пробивать.')
     # manual requests
-    c.execute('SELECT requests_left FROM users WHERE id=%s',(uid,))
+    c.execute('SELECT requests_left FROM users WHERE id=?',(uid,))
     rl=c.fetchone()[0]
     if rl>0:
-        c.execute('UPDATE users SET requests_left=requests_left-1 WHERE id=%s',(uid,)); conn.commit()
+        c.execute('UPDATE users SET requests_left=requests_left-1 WHERE id=?',(uid,)); conn.commit()
     else:
         # trial/sub
         if not is_admin(uid) and not is_subscribed(uid):
-            c.execute('SELECT free_used FROM users WHERE id=%s',(uid,))
+            c.execute('SELECT free_used FROM users WHERE id=?',(uid,))
             fu=c.fetchone()[0]
             if fu>=TRIAL_LIMIT:
-                c.execute('UPDATE users SET trial_expired=TRUE WHERE id=%s',(uid,)); conn.commit()
+                c.execute('UPDATE users SET trial_expired=TRUE WHERE id=?',(uid,)); conn.commit()
                 return await message.answer('🔐 Trial over.',reply_markup=sub_keyboard())
     # flood
     if not is_admin(uid) and check_flood(uid): return await message.answer('⛔ Flood')
     # blacklist
-    c.execute('SELECT 1 FROM blacklist WHERE value=%s',(query,))
+    c.execute('SELECT 1 FROM blacklist WHERE value=?',(query,))
     if c.fetchone(): return await message.answer('🔒 Access denied')
     # call API
     await message.answer(f"🕷️ Connecting to nodes...\n🧬 Running recon on <code>{query}</code>")
@@ -300,12 +299,12 @@ async def search_handler(message: Message):
     await message.answer_document(FSInputFile(fname))
     os.remove(fname)
     if not is_admin(uid) and not is_subscribed(uid):
-        c.execute('UPDATE users SET free_used=free_used+1 WHERE id=%s',(uid,)); conn.commit()
+        c.execute('UPDATE users SET free_used=free_used+1 WHERE id=?',(uid,)); conn.commit()
 
 # Commands
 @dp.message(F.text=='/status')
 async def status_handler(m:Message):
-    uid=m.from_user.id; c.execute('SELECT subs_until,free_used,hidden_data,requests_left FROM users WHERE id=%s',(uid,))
+    uid=m.from_user.id; c.execute('SELECT subs_until,free_used,hidden_data,requests_left FROM users WHERE id=?',(uid,))
     su,fu,hd,rl=c.fetchone(); now=int(time.time())
     if hd: return await m.answer('🔒 Your data is hidden')
     sub=('active until '+datetime.fromtimestamp(su).strftime('%Y-%m-%d %H:%M')) if su>now else 'not active'
