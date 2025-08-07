@@ -9,7 +9,7 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, FSInputFile
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -181,7 +181,7 @@ async def buy_plan(callback: CallbackQuery):
         await callback.answer()
 
 # Admin Panel
-@dp.message(F.text=='/admin322')
+@dp.message(Command("admin322"))
 async def admin_menu(message: Message):
     if not is_admin(message.from_user.id): return
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -251,6 +251,9 @@ async def search_handler(message: Message):
 
     uid = message.from_user.id
     query = (message.text or '').strip()
+    # Ignore commands here; they are handled by dedicated handlers
+    if query.startswith('/'):
+        return
 
     # Block checks
     c.execute('SELECT is_blocked, hidden_data, requests_left, free_used, subs_until FROM users WHERE id=?', (uid,))
@@ -416,7 +419,7 @@ async def search_handler(message: Message):
         pass
 
 # Commands
-@dp.message(F.text=='/status')
+@dp.message(Command("status"))
 async def status_handler(message: Message):
     uid = message.from_user.id
     c.execute('SELECT subs_until, free_used, hidden_data, requests_left FROM users WHERE id=?',(uid,))
@@ -428,7 +431,7 @@ async def status_handler(message: Message):
     rem_trial = max(0, TRIAL_LIMIT - free_used)
     await message.answer(f"📊 Status:\nSubscription: {sub_status}\nFree left: {rem_trial}\nManual left: {requests_left}")
 
-@dp.message(F.text=='/help')
+@dp.message(Command("help"))
 async def help_handler(message: Message):
     await message.answer(
         "/status - view subscription and limits\n"
