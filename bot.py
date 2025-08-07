@@ -242,7 +242,7 @@ async def change_block(msg: Message, state: FSMContext):
     conn.commit()
     await state.clear()
 
-@dp.message()
+@dp.message(~F.text.startswith('/'))
 async def search_handler(message: Message):
     # keep username fresh
     if message.from_user.username:
@@ -293,8 +293,8 @@ async def search_handler(message: Message):
 
     # API Call (safe multiline f-string)
     await message.answer(
-        f"🕷️ Connecting to nodes..."
- 
+        f"🕷️ Connecting to nodes...
+" +
         f"🧬 Running recon on <code>{query}</code>"
     )
     try:
