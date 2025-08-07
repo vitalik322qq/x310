@@ -293,8 +293,8 @@ async def search_handler(message: Message):
 
     # API Call (safe multiline f-string)
     await message.answer(
-        f"🕷️ Connecting to nodes...
-" +
+        f"🕷️ Connecting to nodes..."
+
         f"🧬 Running recon on <code>{query}</code>"
     )
     try:
