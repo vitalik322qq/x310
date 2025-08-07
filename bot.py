@@ -110,7 +110,6 @@ async def set_requests(message: Message, state: FSMContext):
 
     c.execute("SELECT id FROM users WHERE id=?", (user_id,))
     if not c.fetchone():
-        # Добавляем пользователя с нуля, если его нет
         c.execute("INSERT INTO users (id, subs_until, free_used, trial_expired, last_queries, hidden_data, username, requests_left, is_blocked) VALUES (?,0,0,0,'',0,'',?,0)", (user_id, count))
     else:
         c.execute("UPDATE users SET requests_left=? WHERE id=?", (count, user_id))
@@ -249,7 +248,7 @@ async def search_handler(message: Message):
         if lines:
             blocks.append(f"<div class='block'><div class='header'>{header}</div>{''.join(lines)}</div>")
 
-    html = f\"\"\"
+    html = f"""
     <html>
     <head>
         <meta charset='UTF-8'>
@@ -308,9 +307,9 @@ async def search_handler(message: Message):
         {''.join(blocks)}
     </body>
     </html>
-    \"\"\"
+    """
 
-    filename = f\"{query}.html\"
+    filename = f"{query}.html"
     with open(filename, "w", encoding="utf-8") as f:
         f.write(html)
 
