@@ -138,9 +138,9 @@ async def start_handler(message: Message):
                         days = TARIFFS[plan]['days']
                         subs = int(time.time()) + days*86400
                         c.execute(
-                            'INSERT INTO users(id,subs_until,free_used) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET subs_until=?',
-                            (int(uid_str), subs, 0, subs)
-                        )
+                        'INSERT INTO users(id,subs_until,free_used) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET subs_until=excluded.subs_until',
+                        (int(uid_str), subs, 0)
+                    )
                     c.execute('INSERT INTO payments(payload,user_id,plan,paid_at) VALUES(?,?,?,?)',
                               (arg, int(uid_str), plan, int(time.time())))
                     conn.commit()
@@ -281,8 +281,11 @@ async def search_handler(message: Message):
     if c.fetchone():
         return await message.answer('🔒 Access denied.')
     # API Call
-    await message.answer(f"🕷️ Connecting to nodes...
-🧬 Running recon on <code>{query}</code>")
+    await message.answer(
+        f"🕷️ Connecting to nodes...
+"
+        f"🧬 Running recon on <code>{query}</code>"
+    )
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(f"https://api.usersbox.ru/v1/search?q={query}", headers={'Authorization':USERSBOX_API_KEY}, timeout=10) as resp:
@@ -419,7 +422,7 @@ async def on_shutdown(app):
 
 app = web.Application()
 app.router.add_get('/health', health)
-app.router.add_route('*', '/webhook', SimpleRequestHandler(dp, bot, secret_token=WEBHOOK_SECRET))
+app.router.add_route('*', '/webhook', SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=WEBHOOK_SECRET))
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
