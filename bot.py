@@ -179,26 +179,7 @@ async def buy_plan(callback: CallbackQuery):
                 data = await resp.json()
     except Exception as e:
         logging.exception('createInvoice failed: %s', e)
-        return await callback.message.answer('⚠️ Failed to contact Crypto Pay. Try again later.')
-
-    if not data.get('ok'):
-        return await callback.message.answer(f"⚠️ Crypto Pay error: {data}")
-
-    inv = data['result']
-    url = inv.get('bot_invoice_url') or inv.get('pay_url')
-    if not url:
-        return await callback.message.answer('⚠️ Unexpected Crypto Pay response.')
-
-    # save pending payment record (optional)
-    try:
-        c.execute('INSERT OR IGNORE INTO payments(payload,user_id,plan,paid_at) VALUES(?,?,?,?)',
-                  (payload, callback.from_user.id, plan, 0))
-        conn.commit()
-    except Exception:
-        pass
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='💳 Pay in CryptoBot', url=url)]])
-    await callback.message.answer(
+        return await callback.message.answer(
         f"💳 You chose <b>{plan}</b> — <b>${price}</b> in {BASE_CURRENCY}."
 
         f"Tap the button below to pay via @CryptoBot.",
@@ -482,7 +463,7 @@ async def cryptopay_webhook(request: web.Request):
     except Exception:
         return web.json_response({'ok': True})
 
-    inv = data.get('payload') or {}
+    inv = data.get('invoice') or data.get('payload') or {}
     status = inv.get('status')
     payl = inv.get('payload')
     if status == 'paid' and payl:
