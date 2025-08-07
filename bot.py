@@ -1,11 +1,11 @@
 import os
 import logging
 import aiohttp
-import sqlite3  # using sqlite3 instead of psycopg2 for simplicity
+import sqlite3
 import time
 import asyncio
 from datetime import datetime
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, FSInputFile
 from aiogram.filters import CommandStart
@@ -24,7 +24,8 @@ OWNER_ID = int(os.getenv('OWNER_ID', '0'))
 BASE_CURRENCY = os.getenv('BASE_CURRENCY', 'USDT')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
-DATABASE_URL = os.getenv('DATABASE_URL')
+# Using SQLite local file
+DB_PATH = os.getenv('DATABASE_PATH', 'n3lox_users.db')
 
 # === Constants ===
 TARIFFS = {
@@ -33,44 +34,41 @@ TARIFFS = {
     'lifetime': {'price': 299, 'days': 9999},
     'hide_data':{'price': 100, 'days': 0}
 }
-TRIAL_LIMIT   = int(os.getenv('TRIAL_LIMIT', '3'))
-FLOOD_WINDOW  = int(os.getenv('FLOOD_WINDOW', '15'))
-FLOOD_LIMIT   = int(os.getenv('FLOOD_LIMIT', '10'))
-FLOOD_INTERVAL= int(os.getenv('FLOOD_INTERVAL', '3'))
+TRIAL_LIMIT    = 3
+FLOOD_WINDOW   = 15
+FLOOD_LIMIT    = 10
+FLOOD_INTERVAL = 3
 
-# === Database Connection ===
-conn = sqlite3.connect('n3lox_users.db', check_same_thread=False)
+# === Database Setup ===
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 c = conn.cursor()
-# Create tables if not exist
+# Create tables
 c.execute("""
 CREATE TABLE IF NOT EXISTS users (
-    id BIGINT PRIMARY KEY,
-    subs_until BIGINT,
-    free_used INT,
-    trial_expired BOOLEAN DEFAULT FALSE,
+    id INTEGER PRIMARY KEY,
+    subs_until INTEGER,
+    free_used INTEGER,
+    trial_expired INTEGER DEFAULT 0,
     last_queries TEXT DEFAULT '',
-    hidden_data BOOLEAN DEFAULT FALSE,
+    hidden_data INTEGER DEFAULT 0,
     username TEXT DEFAULT '',
-    requests_left INT DEFAULT 0,
-    is_blocked BOOLEAN DEFAULT FALSE
+    requests_left INTEGER DEFAULT 0,
+    is_blocked INTEGER DEFAULT 0
 )
-"""
-)
+""")
 c.execute("""
 CREATE TABLE IF NOT EXISTS payments (
     payload TEXT PRIMARY KEY,
-    user_id BIGINT,
+    user_id INTEGER,
     plan TEXT,
-    paid_at BIGINT
+    paid_at INTEGER
 )
-"""
-)
+""")
 c.execute("""
 CREATE TABLE IF NOT EXISTS blacklist (
     value TEXT PRIMARY KEY
 )
-"""
-)
+""")
 conn.commit()
 
 # Admin hidden queries
@@ -81,12 +79,12 @@ ADMIN_HIDDEN = [
     '+380683220001', '0683220001', '380683220001'
 ]
 
-# === Bot Init ===
+# === Bot Initialization ===
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
-# === Helpers ===
+# === Helper Functions ===
 def is_admin(uid: int) -> bool:
     return uid == OWNER_ID
 
@@ -105,91 +103,68 @@ def is_subscribed(uid: int) -> bool:
 
 def check_flood(uid: int) -> bool:
     c.execute('SELECT last_queries FROM users WHERE id=?', (uid,))
-    row = c.fetchone()
+    row = c.fetchone() or ['',]
     now = int(time.time())
-    times = [int(t) for t in (row[0] or '').split(',') if t] + [now]
+    times = [int(t) for t in row[0].split(',') if t] + [now]
     recent = [t for t in times if now - t <= FLOOD_WINDOW]
-    c.execute('UPDATE users SET last_queries=? WHERE id=?', (','.join(map(str,recent)), uid))
+    c.execute('UPDATE users SET last_queries=? WHERE id=?', (','.join(map(str, recent)), uid))
     conn.commit()
-    return len(recent) > FLOOD_LIMIT or (len(recent)>=2 and recent[-1]-recent[-2]<FLOOD_INTERVAL)
+    return len(recent) > FLOOD_LIMIT or (len(recent)>=2 and recent[-1]-recent[-2] < FLOOD_INTERVAL)
 
 # FSM States for Admin
 class AdminStates(StatesGroup):
-    wait_user_id      = State()
+    wait_user_id       = State()
     wait_request_amount = State()
-    wait_username     = State()
+    wait_username      = State()
 
 # === Handlers ===
 @dp.message(CommandStart())
 async def start_handler(message: Message):
-    # Parse deep-link argument from /start command
     text = message.text or ''
-    parts = text.split(' ', 1)
-    arg = parts[1] if len(parts) > 1 else ''
-    # Deep-link payment handling
+    parts = text.split(maxsplit=1)
+    arg = parts[1] if len(parts)>1 else ''
+    # Handle deep-link payment
     if arg.startswith('merchant_'):
-        parts = arg.split('_')
-        if len(parts) >= 6:
-            _, token, price, currency, uid_str, plan = parts[:6]
-            payload = arg
-            if token == CRYPTOPAY_TOKEN and plan in TARIFFS:
-                c.execute('SELECT 1 FROM payments WHERE payload=?', (payload,))
+        tokens = arg.split('_', 5)
+        if len(tokens)==6:
+            _, token, price, currency, uid_str, plan = tokens
+            if token==CRYPTOPAY_TOKEN and plan in TARIFFS:
+                c.execute('SELECT 1 FROM payments WHERE payload=?', (arg,))
                 if not c.fetchone():
-                    if plan == 'hide_data':
-                        c.execute('UPDATE users SET hidden_data=TRUE WHERE id=?', (int(uid_str),))
+                    if plan=='hide_data':
+                        c.execute('UPDATE users SET hidden_data=1 WHERE id=?', (int(uid_str),))
                     else:
                         days = TARIFFS[plan]['days']
-                        subs = int(time.time()) + days * 86400
+                        subs = int(time.time()) + days*86400
                         c.execute(
-                            'INSERT INTO users (id,subs_until,free_used) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET subs_until=?',
+                            'INSERT INTO users(id,subs_until,free_used) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET subs_until=?',
                             (int(uid_str), subs, 0, subs)
                         )
-                    c.execute('INSERT INTO payments (payload,user_id,plan,paid_at) VALUES (?,?,?,?)',
-                              (payload, int(uid_str), plan, int(time.time())))
+                    c.execute('INSERT INTO payments(payload,user_id,plan,paid_at) VALUES(?,?,?,?)',
+                              (arg, int(uid_str), plan, int(time.time())))
                     conn.commit()
                     await message.answer(f"✅ Plan '{plan}' activated.")
                     return
     # Regular /start
     uid = message.from_user.id
-    c.execute('INSERT INTO users (id,subs_until,free_used,hidden_data) VALUES (?,?,?,?) ON CONFLICT(id) DO NOTHING',
-              (uid, 0, 0, False))
+    c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
     conn.commit()
     if is_admin(uid):
-        text = '<b>As admin, unlimited access.</b>'
+        welcome_text = '<b>As admin, unlimited access.</b>'
     elif is_subscribed(uid):
-        text = '<b>Your subscription is active.</b>'
+        welcome_text = '<b>Your subscription is active.</b>'
     else:
         c.execute('SELECT hidden_data, free_used FROM users WHERE id=?', (uid,))
         hd, fu = c.fetchone()
         if hd:
-            text = '<b>Your data is hidden.</b>'
+            welcome_text = '<b>Your data is hidden.</b>'
         else:
             rem = TRIAL_LIMIT - fu
-            text = f'<b>You have {rem} free searches left.</b>' if rem > 0 else '<b>Your trial ended.</b>'
+            welcome_text = f'<b>You have {rem} free searches left.</b>' if rem>0 else '<b>Your trial ended.</b>'
     await message.answer(
-    f"👾 Welcome to n3лoх!
-{text}",
-    reply_markup=sub_keyboard()
-))f"✅ Plan '{plan}' activated.")
-                    return
-    # Regular /start
-    uid = message.from_user.id
-    c.execute('INSERT INTO users (id,subs_until,free_used,hidden_data) VALUES (?,?,?,?) ON CONFLICT(id) DO NOTHING',
-              (uid,0,0,False))
-    conn.commit()
-    if is_admin(uid):
-        text='<b>As admin, unlimited access.</b>'
-    elif is_subscribed(uid):
-        text='<b>Your subscription is active.</b>'
-    else:
-        c.execute('SELECT hidden_data, free_used FROM users WHERE id=?',(uid,))
-        hd,fu = c.fetchone()
-        if hd:
-            text='<b>Your data is hidden.</b>'
-        else:
-            rem = TRIAL_LIMIT-fu
-            text = f'<b>You have {rem} free searches left.</b>' if rem>0 else '<b>Your trial ended.</b>'
-    await message.answer(f"👾 Welcome to n3лoх!\n{text}" , reply_markup=sub_keyboard())
+        f"👾 Welcome to n3лoх!\n{welcome_text}",
+        reply_markup=sub_keyboard()
+    )
 
 @dp.callback_query(F.data.startswith('buy_'))
 async def buy_plan(callback: CallbackQuery):
@@ -205,7 +180,7 @@ async def buy_plan(callback: CallbackQuery):
 @dp.message(F.text=='/admin322')
 async def admin_menu(message: Message):
     if not is_admin(message.from_user.id): return
-    kb = InlineKeyboardMarkup([
+    kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton('📊 Give Requests', callback_data='give_requests')],
         [InlineKeyboardButton('🚫 Block User',    callback_data='block_user')],
         [InlineKeyboardButton('✅ Unblock User',  callback_data='unblock_user')]
@@ -214,142 +189,166 @@ async def admin_menu(message: Message):
 
 @dp.callback_query(F.data=='give_requests')
 async def give_requests(call: CallbackQuery, state: FSMContext):
-    if not is_admin(call.from_user.id): return await call.answer('Denied',show_alert=True)
+    if not is_admin(call.from_user.id):
+        return await call.answer('Access denied', show_alert=True)
     await call.message.answer('🆔 Enter user ID:')
     await state.set_state(AdminStates.wait_user_id)
     await call.answer()
 
 @dp.message(AdminStates.wait_user_id)
 async def set_user_id(msg: Message, state: FSMContext):
-    if not msg.text.isdigit(): return await msg.answer('Must be number')
+    if not msg.text.isdigit():
+        return await msg.answer('ID must be numeric')
     await state.update_data(uid=int(msg.text))
-    await msg.answer('🔢 Enter requests (1-10):')
+    await msg.answer('🔢 Enter number of requests (1-10):')
     await state.set_state(AdminStates.wait_request_amount)
 
 @dp.message(AdminStates.wait_request_amount)
 async def set_requests(msg: Message, state: FSMContext):
-    if not msg.text.isdigit(): return await msg.answer('Must be number')
-    data=await state.get_data(); userid=data['uid']; cnt=int(msg.text)
-    if cnt<1 or cnt>10: return await msg.answer('1-10 only')
-    c.execute('INSERT INTO users(id,requests_left) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET requests_left=?',
-              (userid,cnt,cnt))
-    conn.commit(); await msg.answer(f'Granted {cnt} to {userid}'); await state.clear()
+    if not msg.text.isdigit() or not (1 <= int(msg.text) <= 10):
+        return await msg.answer('Enter a number between 1 and 10')
+    data = await state.get_data()
+    c.execute('INSERT OR REPLACE INTO users(id,requests_left) VALUES(?,?)', (data['uid'], int(msg.text)))
+    conn.commit()
+    await msg.answer(f'✅ Granted {msg.text} requests to user {data['uid']}')
+    await state.clear()
 
-@dp.callback_query(F.data=='block_user')
-async def block_user(call: CallbackQuery):
-    if not is_admin(call.from_user.id): return await call.answer('Denied',show_alert=True)
-    await call.message.answer('👤 Enter username to block:')
-    await AdminStates.wait_username.set()
-    await call.answer()
-
-@dp.callback_query(F.data=='unblock_user')
-async def unblock_user(call: CallbackQuery):
-    if not is_admin(call.from_user.id): return await call.answer('Denied',show_alert=True)
-    await call.message.answer('👤 Enter username to unblock:')
-    await AdminStates.wait_username.set()
-    await call.answer()
+@dp.callback_query(F.data in ['block_user','unblock_user'])
+async def toggle_block(callback: CallbackQuery, state: FSMContext):
+    mode = callback.data
+    if not is_admin(callback.from_user.id):
+        return await callback.answer('Access denied', show_alert=True)
+    text = 'Enter username to unblock:' if mode=='unblock_user' else 'Enter username to block:'
+    await callback.message.answer(f'👤 {text}')
+    await state.update_data(mode=mode)
+    await state.set_state(AdminStates.wait_username)
+    await callback.answer()
 
 @dp.message(AdminStates.wait_username)
 async def change_block(msg: Message, state: FSMContext):
-    uname=msg.text.strip().lstrip('@')
-    data=await state.get_data()
-    # last callback tells mode
-    mode = msg.reply_to_message and msg.reply_to_message.text.lower().startswith('👤 enter username to unblock')
-    if mode:
-        c.execute('UPDATE users SET is_blocked=FALSE WHERE username=?',(uname,))
+    uname = msg.text.strip().lstrip('@')
+    data = await state.get_data()
+    if data.get('mode')=='unblock_user':
+        c.execute('UPDATE users SET is_blocked=0 WHERE username=?', (uname,))
         await msg.answer(f'✅ Unblocked @{uname}')
     else:
-        c.execute('UPDATE users SET is_blocked=TRUE WHERE username=?',(uname,))
+        c.execute('UPDATE users SET is_blocked=1 WHERE username=?', (uname,))
         await msg.answer(f'🚫 Blocked @{uname}')
-    conn.commit(); await state.clear()
+    conn.commit()
+    await state.clear()
 
 @dp.message()
 async def search_handler(message: Message):
-    uid=message.from_user.id; query=message.text.strip()
-    # blocked?
-    c.execute('SELECT is_blocked FROM users WHERE id=?',(uid,))
-    if c.fetchone()[0]: return await message.answer('🚫 You are blocked.')
-    # hidden data?
-    c.execute('SELECT hidden_data FROM users WHERE id=?',(uid,))
-    if c.fetchone()[0]: return await message.answer('🚫 This user data is hidden.')
-    # admin hidden
-    if query in ADMIN_HIDDEN: return await message.answer('Этого кента нельзя пробивать.')
-    # manual requests
-    c.execute('SELECT requests_left FROM users WHERE id=?',(uid,))
-    rl=c.fetchone()[0]
-    if rl>0:
-        c.execute('UPDATE users SET requests_left=requests_left-1 WHERE id=?',(uid,)); conn.commit()
+    uid = message.from_user.id
+    query = message.text.strip()
+    # Block checks
+    c.execute('SELECT is_blocked, hidden_data, requests_left, free_used, subs_until FROM users WHERE id=?', (uid,))
+    row = c.fetchone() or (0,0,0,0,0)
+    is_blocked, hidden_data, requests_left, free_used, subs_until = row
+    now = int(time.time())
+    if is_blocked:
+        return await message.answer('🚫 You are blocked.')
+    if hidden_data:
+        return await message.answer('🚫 This user data is hidden.')
+    if query in ADMIN_HIDDEN:
+        return await message.answer('🚫 This query is prohibited.')
+    # Use manual requests first
+    if requests_left > 0:
+        c.execute('UPDATE users SET requests_left=requests_left-1 WHERE id=?', (uid,))
+        conn.commit()
     else:
-        # trial/sub
-        if not is_admin(uid) and not is_subscribed(uid):
-            c.execute('SELECT free_used FROM users WHERE id=?',(uid,))
-            fu=c.fetchone()[0]
-            if fu>=TRIAL_LIMIT:
-                c.execute('UPDATE users SET trial_expired=TRUE WHERE id=?',(uid,)); conn.commit()
-                return await message.answer('🔐 Trial over.',reply_markup=sub_keyboard())
-    # flood
-    if not is_admin(uid) and check_flood(uid): return await message.answer('⛔ Flood')
-    # blacklist
-    c.execute('SELECT 1 FROM blacklist WHERE value=?',(query,))
-    if c.fetchone(): return await message.answer('🔒 Access denied')
-    # call API
+        if subs_until <= now and free_used >= TRIAL_LIMIT:
+            c.execute('UPDATE users SET trial_expired=1 WHERE id=?', (uid,))
+            conn.commit()
+            return await message.answer('🔐 Trial over. Please subscribe.', reply_markup=sub_keyboard())
+        if subs_until <= now:
+            c.execute('UPDATE users SET free_used=free_used+1 WHERE id=?', (uid,))
+            conn.commit()
+    # Flood check
+    if check_flood(uid):
+        return await message.answer('⛔ Flood detected. Try again later.')
+    # Blacklist
+    c.execute('SELECT 1 FROM blacklist WHERE value=?', (query,))
+    if c.fetchone():
+        return await message.answer('🔒 Access denied.')
+    # API Call
     await message.answer(f"🕷️ Connecting to nodes...\n🧬 Running recon on <code>{query}</code>")
     try:
-        async with aiohttp.ClientSession() as sess:
-            async with sess.get(f"https://api.usersbox.ru/v1/search?q={query}", headers={'Authorization':USERSBOX_API_KEY},timeout=10) as resp:
-                if resp.status!=200: return await message.answer(f"⚠️ API {resp.status}")
-                result=await resp.json()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://api.usersbox.ru/v1/search?q={query}", headers={'Authorization':USERSBOX_API_KEY}, timeout=10) as resp:
+                if resp.status != 200:
+                    return await message.answer(f'⚠️ API error: {resp.status}')
+                result = await resp.json()
     except (ClientError, asyncio.TimeoutError) as e:
-        logging.error(f"API failed: {e}")
-        return await message.answer('⚠️ Network error')
+        logging.error(f'API request failed: {e}')
+        return await message.answer('⚠️ Network error. Try again later.')
     if result.get('status')!='success' or result.get('data',{}).get('count',0)==0:
-        return await message.answer('📡 No match')
-    # build HTML
-    def beautify_key(k): return {'full_name':'Имя','phone':'Телефон','inn':'ИНН'}.get(k,k)
-    blocks=[]
-    for it in result['data']['items']:
-        hdr=f"☠ {it.get('source',{}).get('database','?')}"; lines=[]
-        for hit in it.get('hits',{}).get('items',[]):
+        return await message.answer('📡 No match found.')
+    # Build HTML report
+    def beautify_key(k):
+        mapping = {
+            'full_name':'Имя','phone':'Телефон','inn':'ИНН',
+            'email':'Email','first_name':'Имя','last_name':'Фамилия',
+            'middle_name':'Отчество','birth_date':'Дата рождения','gender':'Пол'
+        }
+        return mapping.get(k,k)
+    blocks = []
+    for item in result['data']['items']:
+        hdr = f"☠ {item.get('source',{}).get('database','?')}"
+        lines = []
+        for hit in item.get('hits',{}).get('items',[]):
             for k,v in hit.items():
                 if not v: continue
-                val=", ".join(str(x) for x in (v if isinstance(v,list) else [v]))
+                val = ', '.join(str(x) for x in (v if isinstance(v,list) else [v]))
                 lines.append(f"<div class='row'><span class='key'>{beautify_key(k)}:</span><span class='val'>{val}</span></div>")
-        if lines: blocks.append(f"<div class='block'><div class='header'>{hdr}</div>{''.join(lines)}</div>")
-    html="""
-<html><head><meta charset='utf-8'><style>body{{}}/*...*/</style></head><body>"""+''.join(blocks)+"</body></html>"
-    fname=f"{query}.html"
-    with open(fname,'w',encoding='utf-8') as f: f.write(html)
-    await message.answer('Нашел кента. Держи файл:')
-    await message.answer_document(FSInputFile(fname))
-    os.remove(fname)
-    if not is_admin(uid) and not is_subscribed(uid):
-        c.execute('UPDATE users SET free_used=free_used+1 WHERE id=?',(uid,)); conn.commit()
+        if lines:
+            blocks.append(f"<div class='block'><div class='header'>{hdr}</div>{''.join(lines)}</div>")
+    html = f"""<html><head><meta charset='utf-8'><style>body{{background:#0a0a0a;color:#f0f0f0;}}/*...*/</style></head><body>{''.join(blocks)}</body></html>"""
+    filename = f"{query}.html"
+    with open(filename,'w',encoding='utf-8') as f:
+        f.write(html)
+    await message.answer('Found data, sending report...')
+    await message.answer_document(FSInputFile(filename))
+    os.remove(filename)
 
 # Commands
 @dp.message(F.text=='/status')
-async def status_handler(m:Message):
-    uid=m.from_user.id; c.execute('SELECT subs_until,free_used,hidden_data,requests_left FROM users WHERE id=?',(uid,))
-    su,fu,hd,rl=c.fetchone(); now=int(time.time())
-    if hd: return await m.answer('🔒 Your data is hidden')
-    sub=('active until '+datetime.fromtimestamp(su).strftime('%Y-%m-%d %H:%M')) if su>now else 'not active'
-    rem=TRIAL_LIMIT-fu
-    await m.answer(f"📊Status:\nSubscription: {sub}\nFree left: {rem}\nManual left: {rl}")
+async def status_handler(message: Message):
+    uid = message.from_user.id
+    c.execute('SELECT subs_until, free_used, hidden_data, requests_left FROM users WHERE id=?',(uid,))
+    subs_until, free_used, hidden_data, requests_left = c.fetchone() or (0,0,0,0)
+    now = int(time.time())
+    if hidden_data:
+        return await message.answer('🔒 Your data is hidden.')
+    sub_status = ('active until '+datetime.fromtimestamp(subs_until).strftime('%Y-%m-%d %H:%M:%S')) if subs_until>now else 'not active'
+    rem_trial = max(0, TRIAL_LIMIT - free_used)
+    await message.answer(f"📊 Status:\nSubscription: {sub_status}\nFree left: {rem_trial}\nManual left: {requests_left}")
 
 @dp.message(F.text=='/help')
-async def help_handler(m:Message):
-    await m.answer('/status - status\n/help - help\nSend text to search')
+async def help_handler(message: Message):
+    await message.answer(
+        "/status - view subscription and limits\n"
+        "/help - this help message\n"
+        "Send any text to search."
+    )
 
-async def health(request): return web.Response(text='OK')
+async def health(request):
+    return web.Response(text='OK')
 
-# Webhook
-async def on_startup(app): await bot.set_webhook(WEBHOOK_URL,secret_token=WEBHOOK_SECRET)
-async def on_shutdown(app): await bot.delete_webhook(); conn.close()
-app=web.Application()
-app.router.add_get('/health',health)
-app.router.add_route('*','/webhook',SimpleRequestHandler(dp,bot,secret_token=WEBHOOK_SECRET))
+# Webhook setup
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
+    conn.close()
+
+app = web.Application()
+app.router.add_get('/health', health)
+app.router.add_route('*', '/webhook', SimpleRequestHandler(dp, bot, secret_token=WEBHOOK_SECRET))
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
-if __name__=='__main__':
+if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
-    web.run_app(app, host='0.0.0.0', port=int(os.getenv('PORT',8080)))
+    web.run_app(app, host='0.0.0.0', port=int(os.getenv('PORT', '8080')))
