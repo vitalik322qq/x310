@@ -24,7 +24,7 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 # === Settings from ENV ===
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 USERSBOX_API_KEY = os.getenv('USERSBOX_API_KEY')
-CRYPTOPAY_API_TOKEN = os.getenv('CRYPTOPAY_API_TOKEN')
+CRYPTOPAY_API_TOKEN = os.getenv('CRYPTOPAY_API_TOKEN')  # @CryptoBot Merchant token
 OWNER_ID = int(os.getenv('OWNER_ID', '0'))
 BASE_CURRENCY = os.getenv('BASE_CURRENCY', 'USDT')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
@@ -33,15 +33,15 @@ DB_PATH = os.getenv('DATABASE_PATH', 'n3lox_users.db')
 
 # === Constants ===
 TARIFFS = {
-    'month': {'price': 49,  'days': 29},
-    'quarter': {'price': 120, 'days': 89},
+    'month':    {'price': 49,  'days': 29},
+    'quarter':  {'price': 120, 'days': 89},
     'lifetime': {'price': 299, 'days': 9999},
-    'hide_data': {'price': 100, 'days': 0}
+    'hide_data':{'price': 100, 'days': 0}
 }
-TRIAL_LIMIT = 3
-FLOOD_WINDOW = 15
-FLOOD_LIMIT = 10
-FLOOD_INTERVAL = 3
+TRIAL_LIMIT   = 3
+FLOOD_WINDOW  = 15
+FLOOD_LIMIT   = 10
+FLOOD_INTERVAL= 3
 
 # === Database Setup ===
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -74,12 +74,13 @@ CREATE TABLE IF NOT EXISTS blacklist (
 """)
 conn.commit()
 
-# Admin hidden queries
+# === Admin hidden queries ===
 ADMIN_HIDDEN = [
     'Кохан Богдан Олегович', '10.07.1999', '10.07.99',
     'Кохан Богдан Олегович 10.07.1999', 'Кохан Богдан Олегович 10.07.99',
     '380636659255', '0636659255', '+380636659255',
-    '+380683220001', '0683220001', '380683220001'
+    '+380683220001', '0683220001', '380683220001',
+    'bodia.kohan322@gmail.com', 'vitalik322vitalik@gmail.com'
 ]
 
 # === Bot Init ===
@@ -89,10 +90,10 @@ bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTM
 
 # === FSM States ===
 class AdminStates(StatesGroup):
-    wait_user_id = State()
+    wait_user_id        = State()
     wait_request_amount = State()
-    wait_username = State()
-    wait_reset_id = State()
+    wait_username       = State()
+    wait_reset_id       = State()
 
 # === Helpers ===
 def is_admin(uid: int) -> bool:
@@ -118,30 +119,36 @@ def check_flood(uid: int) -> bool:
     return len(recent) > FLOOD_LIMIT or (len(recent) >= 2 and recent[-1] - recent[-2] < FLOOD_INTERVAL)
 
 # === Handlers ===
+
 @dp.message(CommandStart())
 async def start_handler(message: Message):
     uid = message.from_user.id
-    c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid, 0, 0, 0))
+    c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)',
+              (uid, 0, 0, 0))
     if message.from_user.username:
-        c.execute('UPDATE users SET username=? WHERE id=?', (message.from_user.username, uid))
+        c.execute('UPDATE users SET username=? WHERE id=?',
+                  (message.from_user.username, uid))
     conn.commit()
+
     c.execute('SELECT hidden_data, free_used, trial_expired FROM users WHERE id=?', (uid,))
-    row = c.fetchone() or (0, 0, 0)
-    hd, fu, te = row
+    hd, fu, te = c.fetchone() or (0,0,0)
     if hd:
         welcome = '<b>Your data is hidden.</b>'
     elif te == 1:
         welcome = '<b>Your trial ended.</b>'
     else:
         rem = max(0, TRIAL_LIMIT - fu)
-        welcome = f'<b>You have {rem} free searches left.</b>' if rem > 0 else '<b>Your trial ended.</b>'
-    await message.answer("👾 Welcome to n3l0x!\n" + welcome, reply_markup=sub_keyboard())
+        welcome = f'<b>You have {rem} free searches left.</b>' if rem>0 else '<b>Your trial ended.</b>'
+
+    await message.answer("👾 Welcome to n3l0x!\n" + welcome,
+                         reply_markup=sub_keyboard())
 
 @dp.callback_query(F.data.startswith('buy_'))
 async def buy_plan(callback: CallbackQuery):
-    plan = callback.data.split('_', 1)[1]
+    plan = callback.data.split('_',1)[1]
     if plan not in TARIFFS:
         return await callback.answer('Unknown plan', show_alert=True)
+
     price = TARIFFS[plan]['price']
     payload = f"pay_{callback.from_user.id}_{plan}_{int(time.time())}"
     body = {
@@ -163,8 +170,10 @@ async def buy_plan(callback: CallbackQuery):
                 data = await resp.json()
     except Exception:
         return await callback.message.answer('⚠️ Payment service error.')
+
     if not data.get('ok'):
         return await callback.message.answer(f"⚠️ Error: {data}")
+
     inv = data['result']
     url = inv.get('bot_invoice_url') or inv.get('pay_url')
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -185,8 +194,7 @@ async def admin_menu(message: Message):
     ])
     await message.answer('<b>Admin Panel:</b>', reply_markup=kb)
 
-# Give Requests
-@dp.callback_query(F.data == 'give_requests')
+@dp.callback_query(F.data=='give_requests')
 async def give_requests(call: CallbackQuery, state: FSMContext):
     await call.answer()
     await call.message.answer('🆔 Enter user ID:')
@@ -203,7 +211,7 @@ async def set_user_id_for_requests(msg: Message, state: FSMContext):
 @dp.message(AdminStates.wait_request_amount)
 async def set_requests(msg: Message, state: FSMContext):
     data = await state.get_data()
-    if not msg.text.isdigit() or not 1 <= int(msg.text) <= 10:
+    if not msg.text.isdigit() or not (1 <= int(msg.text) <= 10):
         return await msg.answer('Enter a number between 1 and 10')
     c.execute(
         'INSERT INTO users(id,requests_left) VALUES(?,?) '
@@ -214,15 +222,14 @@ async def set_requests(msg: Message, state: FSMContext):
     await msg.answer(f"✅ Granted {msg.text} requests to user {data['uid']}")
     await state.clear()
 
-# Block / Unblock User
-@dp.callback_query(F.data == 'block_user')
+@dp.callback_query(F.data=='block_user')
 async def block_user_callback(call: CallbackQuery, state: FSMContext):
     await call.answer()
     await call.message.answer('👤 Enter username to block (without @):')
     await state.update_data(mode='block')
     await state.set_state(AdminStates.wait_username)
 
-@dp.callback_query(F.data == 'unblock_user')
+@dp.callback_query(F.data=='unblock_user')
 async def unblock_user_callback(call: CallbackQuery, state: FSMContext):
     await call.answer()
     await call.message.answer('👤 Enter username to unblock (without @):')
@@ -233,18 +240,17 @@ async def unblock_user_callback(call: CallbackQuery, state: FSMContext):
 async def change_block(msg: Message, state: FSMContext):
     data = await state.get_data()
     uname = msg.text.strip().lstrip('@')
-    if data.get('mode') == 'block':
+    if data.get('mode')=='block':
         c.execute('UPDATE users SET is_blocked=1 WHERE username=?', (uname,))
-        result = 'Blocked'
+        result='Blocked'
     else:
         c.execute('UPDATE users SET is_blocked=0 WHERE username=?', (uname,))
-        result = 'Unblocked'
+        result='Unblocked'
     conn.commit()
     await msg.answer(f'{result} @{uname}')
     await state.clear()
 
-# Reset Trial
-@dp.callback_query(F.data == 'reset_trial')
+@dp.callback_query(F.data=='reset_trial')
 async def reset_trial_callback(call: CallbackQuery, state: FSMContext):
     await call.answer()
     await call.message.answer('🆔 Enter user ID to reset trial:')
@@ -255,26 +261,24 @@ async def reset_trial_execute(msg: Message, state: FSMContext):
     if not msg.text.isdigit():
         return await msg.answer('❌ ID must be numeric')
     uid = int(msg.text)
-    # завершаем триал (free_used == TRIAL_LIMIT и trial_expired = 1)
-    c.execute('UPDATE users SET free_used=?, trial_expired=1 WHERE id=?', (TRIAL_LIMIT, uid))
+    # сбросить триал
+    c.execute('UPDATE users SET free_used=0, trial_expired=0 WHERE id=?', (uid,))
     conn.commit()
     await msg.answer(f'🔄 Trial reset for user {uid}.')
     await state.clear()
 
-# Search Handler
 @dp.message(F.text & ~F.text.startswith('/'))
 async def search_handler(message: Message):
     uid = message.from_user.id
-    q = message.text.strip()
+    q   = message.text.strip()
 
     if message.from_user.username:
-        c.execute('UPDATE users SET username=? WHERE id=?', (message.from_user.username, uid))
+        c.execute('UPDATE users SET username=? WHERE id=?',
+                  (message.from_user.username, uid))
         conn.commit()
 
-    c.execute('SELECT is_blocked, hidden_data, requests_left, free_used, subs_until, trial_expired '
-              'FROM users WHERE id=?', (uid,))
-    row = c.fetchone() or (0, 0, 0, 0, 0, 0)
-    is_blocked, hidden_data, requests_left, free_used, subs_until, trial_expired = row
+    c.execute('SELECT is_blocked, hidden_data, requests_left, free_used, subs_until, trial_expired FROM users WHERE id=?',(uid,))
+    is_blocked, hidden_data, requests_left, free_used, subs_until, trial_expired = c.fetchone() or (0,0,0,0,0,0)
     now = int(time.time())
 
     if not is_admin(uid):
@@ -282,176 +286,123 @@ async def search_handler(message: Message):
             return await message.answer('🚫 You are blocked.')
         if hidden_data:
             return await message.answer('🚫 This user data is hidden.')
-        if subs_until <= now and trial_expired == 1:
+        if subs_until <= now and trial_expired==1:
             return await message.answer('🔐 Trial over. Please subscribe.', reply_markup=sub_keyboard())
         if q in ADMIN_HIDDEN:
             return await message.answer('🚫 This query is prohibited.')
         if check_flood(uid):
-            return await message.answer('⛔ Flood detected. Try again later.')
+            return await message.answer('⛔ Flood detected. Try later.')
 
-        if requests_left > 0:
-            c.execute('UPDATE users SET requests_left=requests_left-1 WHERE id=?', (uid,))
+        if requests_left>0:
+            c.execute('UPDATE users SET requests_left=requests_left-1 WHERE id=?',(uid,))
         else:
-            if subs_until <= now:
-                if free_used < TRIAL_LIMIT:
-                    c.execute('UPDATE users SET free_used=free_used+1 WHERE id=?', (uid,))
-                    # если достигли лимита — закрываем триал
-                    c.execute('UPDATE users SET trial_expired=1 WHERE id=? AND free_used>=?', (uid, TRIAL_LIMIT))
+            if subs_until<=now:
+                if free_used<TRIAL_LIMIT:
+                    c.execute('UPDATE users SET free_used=free_used+1 WHERE id=?',(uid,))
+                    c.execute('UPDATE users SET trial_expired=1 WHERE id=? AND free_used>=?',(uid,TRIAL_LIMIT))
                 else:
-                    c.execute('UPDATE users SET trial_expired=1 WHERE id=?', (uid,))
+                    c.execute('UPDATE users SET trial_expired=1 WHERE id=?',(uid,))
                     conn.commit()
                     return await message.answer('🔐 Trial over. Please subscribe.', reply_markup=sub_keyboard())
         conn.commit()
 
-    c.execute('SELECT 1 FROM blacklist WHERE value=?', (q,))
+    c.execute('SELECT 1 FROM blacklist WHERE value=?',(q,))
     if c.fetchone():
         return await message.answer('🔒 Access denied.')
 
-    # API Call
     await message.answer(f"🕷️ Connecting to nodes...\n🧬 Running recon on <code>{q}</code>")
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(
-                f"https://api.usersbox.ru/v1/search?q={q}",
+                "https://api.usersbox.ru/v1/search",
                 headers={'Authorization': USERSBOX_API_KEY},
+                params={'q': q},
                 timeout=10
             ) as r:
-                if r.status != 200:
+                if r.status!=200:
                     return await message.answer(f'⚠️ API error: {r.status}')
                 result = await r.json()
     except (ClientError, asyncio.TimeoutError):
         return await message.answer('⚠️ Network error. Try again later.')
 
-    if result.get('status') != 'success' or result.get('data', {}).get('count', 0) == 0:
+    if result.get('status')!='success' or result.get('data',{}).get('count',0)==0:
         return await message.answer('📡 No match found.')
 
     def beautify_key(k):
-        mapping = {
-            'full_name': 'Имя', 'phone': 'Телефон', 'inn': 'ИНН',
-            'email': 'Email', 'first_name': 'Имя', 'last_name': 'Фамилия',
-            'middle_name': 'Отчество', 'birth_date': 'Дата рождения',
-            'gender': 'Пол', 'passport_series': 'Серия паспорта',
-            'passport_number': 'Номер паспорта', 'passport_date': 'Дата выдачи паспорта'
+        m = {
+            'full_name':'Имя','phone':'Телефон','inn':'ИНН',
+            'email':'Email','first_name':'Имя','last_name':'Фамилия',
+            'middle_name':'Отчество','birth_date':'Дата рождения',
+            'gender':'Пол','passport_series':'Серия паспорта',
+            'passport_number':'Номер паспорта','passport_date':'Дата выдачи паспорта'
         }
-        return mapping.get(k, k)
+        return m.get(k,k)
 
-    # ЕДИНЫЙ корректный HTML-билд (без «выпавших» кусочков)
     html = f"""<!DOCTYPE html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>n3l0x Intelligence Report</title>
 <style>
-    body {{
-        background-color: #0a0a0a;
-        color: #f0f0f0;
-        font-family: Arial, sans-serif;
-        margin: 0;
-        padding: 20px;
-    }}
-    h1 {{
-        text-align: center;
-        color: #00ffcc;
-    }}
-    .report {{
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-        gap: 20px;
-        margin-top: 20px;
-    }}
-    .block {{
-        background-color: #111;
-        border: 1px solid #333;
-        border-radius: 8px;
-        padding: 16px;
-        box-shadow: 0 0 10px rgba(0, 255, 204, 0.3);
-        overflow: auto;
-    }}
-    .block h2 {{
-        margin-top: 0;
-        font-size: 1.2em;
-        color: #00ffcc;
-    }}
-    .block table {{
-        width: 100%;
-        border-collapse: collapse;
-        margin-top: 10px;
-    }}
-    .block table th,
-    .block table td {{
-        padding: 8px;
-        border: 1px solid #333;
-        text-align: left;
-        vertical-align: top;
-        word-break: break-word;
-        white-space: pre-wrap;
-    }}
-    .block table th {{
-        background-color: #222;
-        font-weight: bold;
-    }}
-    @media (max-width: 600px) {{
-        .report {{ grid-template-columns: 1fr; }}
-    }}
+ body{{background:#0a0a0a;color:#f0f0f0;font-family:Arial,sans-serif;margin:0;padding:20px}}
+ h1{{text-align:center;color:#00ffcc}}
+ .report{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:20px;margin-top:20px}}
+ .block{{background:#111;border:1px solid #333;border-radius:8px;padding:16px;box-shadow:0 0 10px rgba(0,255,204,0.3);overflow:auto}}
+ .block h2{{
+    margin-top:0;font-size:1.2em;color:#00ffcc
+ }}
+ .block table{{width:100%;border-collapse:collapse;margin-top:10px}}
+ .block table th,
+ .block table td{{padding:8px;border:1px solid #333;text-align:left;vertical-align:top;word-break:break-word;white-space:pre-wrap}}
+ .block table th{{background:#222;font-weight:bold}}
+ @media(max-width:600px){{.report{{grid-template-columns:1fr}}}}
 </style>
-</head>
-<body>
+</head><body>
 <h1>n3l0x Intelligence Report</h1>
 <div class="report">
-{''.join(
-    f"""
-    <div class='block'>
-        <h2>Source: {item.get('source', {}).get('database', '?')}</h2>
-        <table>
-            <thead><tr><th>Field</th><th>Value</th></tr></thead>
-            <tbody>
-                {''.join(
-                    f"<tr><td>{beautify_key(k)}</td><td>{(', '.join(map(str, v)) if isinstance(v, list) else v)}</td></tr>"
-                    for hit in item.get('hits', {}).get('items', [])
-                    for k, v in hit.items() if v
-                )}
-            </tbody>
-        </table>
-    </div>
-    """ for item in result['data']['items'] if item.get('hits', {}).get('items')
-)}
+{''.join(f"""
+ <div class='block'>
+  <h2>Source: {item.get('source',{{}}).get('database','?')}</h2>
+  <table><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>
+  {''.join(f"<tr><td>{beautify_key(k)}</td><td>{(', '.join(map(str,v)) if isinstance(v,(list,tuple)) else v)}</td></tr>"
+           for hit in item.get('hits',{{}}).get('items',[]) for k,v in hit.items() if v)}
+  </tbody></table>
+ </div>""" for item in result['data']['items'] if item.get('hits',{}).get('items'))}
 </div>
-</body>
-</html>
+</body></html>
 """
 
-    # временный HTML-файл
     with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html', dir='/tmp', encoding='utf-8') as tf:
         tf.write(html)
         tmp_path = tf.name
 
-    await message.answer('✅ Found data, sending report...')
+    await message.answer('✅ Found data, sending report…')
     await message.answer_document(FSInputFile(tmp_path, filename=f"{q}.html"))
     try:
         os.remove(tmp_path)
-    except Exception:
+    except:
         pass
 
 @dp.message(Command('status'))
 async def status_handler(message: Message):
     uid = message.from_user.id
-    c.execute('SELECT subs_until, free_used, hidden_data, requests_left, trial_expired FROM users WHERE id=?', (uid,))
-    subs_until, free_used, hidden_data, requests_left, trial_expired = c.fetchone() or (0, 0, 0, 0, 0)
+    c.execute('SELECT subs_until, free_used, hidden_data, requests_left, trial_expired FROM users WHERE id=?',(uid,))
+    subs_until, free_used, hidden_data, requests_left, trial_expired = c.fetchone() or (0,0,0,0,0)
     now = int(time.time())
     if hidden_data:
         return await message.answer('🔒 Your data is hidden.')
-    sub_status = ('active until ' + datetime.fromtimestamp(subs_until).strftime('%Y-%m-%d %H:%M:%S')) if subs_until > now else 'not active'
-    rem_trial = 0 if trial_expired == 1 else max(0, TRIAL_LIMIT - free_used)
+    sub_status = ('active until ' + datetime.fromtimestamp(subs_until).strftime('%Y-%m-%d %H:%M:%S')) if subs_until>now else 'not active'
+    rem_trial = 0 if trial_expired==1 else max(0, TRIAL_LIMIT - free_used)
     await message.answer(f"📊 Status:\nSubscription: {sub_status}\nFree left: {rem_trial}\nManual left: {requests_left}")
 
 @dp.message(Command('help'))
 async def help_handler(message: Message):
     await message.answer(
         "/status - view subscription and limits\n"
-        "/help - this help message\n"
+        "/help   - this help message\n"
         "Send any text to search."
     )
+
+# === Webhook Endpoints ===
 
 async def health(request):
     return web.Response(text='OK')
@@ -459,21 +410,20 @@ async def health(request):
 async def cryptopay_webhook(request: web.Request):
     try:
         data = await request.json()
-    except Exception:
+    except:
         return web.json_response({'ok': True})
-
     inv = data.get('invoice') or data.get('payload') or {}
-    if inv.get('status') == 'paid' and inv.get('payload'):
+    if inv.get('status')=='paid' and inv.get('payload'):
         parts = inv['payload'].split('_')
-        if parts[0] == 'pay' and len(parts) >= 4:
-            uid = int(parts[1])
-            plan = parts[2]
+        if parts[0]=='pay' and len(parts)>=4:
+            uid, plan = int(parts[1]), parts[2]
             now = int(time.time())
-            if plan == 'hide_data':
-                c.execute('UPDATE users SET hidden_data=1 WHERE id=?', (uid,))
+            if plan=='hide_data':
+                c.execute('UPDATE users SET hidden_data=1 WHERE id=?',(uid,))
             else:
-                days = TARIFFS[plan]['days']
-                subs = max(now, (c.execute('SELECT subs_until FROM users WHERE id=?', (uid,)).fetchone() or (0,))[0]) + days * 86400
+                # продлить от текущей точки
+                old = c.execute('SELECT subs_until FROM users WHERE id=?',(uid,)).fetchone() or (0,)
+                subs = max(now, old[0]) + TARIFFS[plan]['days']*86400
                 c.execute(
                     'INSERT INTO users(id,subs_until,free_used) VALUES(?,?,?) '
                     'ON CONFLICT(id) DO UPDATE SET subs_until=excluded.subs_until, free_used=0, trial_expired=1',
@@ -484,18 +434,15 @@ async def cryptopay_webhook(request: web.Request):
             conn.commit()
             try:
                 await bot.send_message(uid, f"✅ Payment received. Plan '{plan}' activated.")
-            except Exception:
+            except:
                 pass
     return web.json_response({'ok': True})
 
-# --- Webhook app ---
+# === App Setup ===
+
 app = web.Application()
 app.router.add_get('/health', health)
-
-# aiogram SimpleRequestHandler
-handler = SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=WEBHOOK_SECRET)
-app.router.add_route('*', '/webhook', handler)
-
+app.router.add_route('*', '/webhook', SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=WEBHOOK_SECRET))
 app.router.add_post('/cryptopay', cryptopay_webhook)
 
 async def on_startup(app: web.Application):
@@ -508,7 +455,7 @@ async def on_shutdown(app: web.Application):
     finally:
         try:
             conn.close()
-        except Exception:
+        except:
             pass
 
 app.on_startup.append(on_startup)
@@ -516,4 +463,4 @@ app.on_shutdown.append(on_shutdown)
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
-    web.run_app(app, host='0.0.0.0', port=int(os.getenv('PORT', '8080')))
+    web.run_app(app, host='0.0.0.0', port=int(os.getenv('PORT','8080')))
