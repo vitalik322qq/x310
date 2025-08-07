@@ -267,7 +267,8 @@ async def reset_trial_execute(msg: Message, state: FSMContext):
     c.execute('UPDATE users SET free_used=?, trial_expired=1 WHERE id=?', (TRIAL_LIMIT, uid))
     conn.commit()
     await msg.answer(f'🔄 Trial reset for user {uid}.')
-    await state.clear()(msg: Message, state: FSMContext):
+    @dp.message(AdminStates.wait_reset_id)
+async def reset_trial_execute(msg: Message, state: FSMContext):
     if not msg.text.isdigit():
         return await msg.answer('❌ ID must be numeric')
     uid = int(msg.text)
