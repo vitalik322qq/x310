@@ -208,9 +208,10 @@ async def set_requests(msg: Message, state: FSMContext):
     if not msg.text.isdigit() or not (1 <= int(msg.text) <= 10):
         return await msg.answer('Enter a number between 1 and 10')
     data = await state.get_data()
-    c.execute('INSERT OR REPLACE INTO users(id,requests_left) VALUES(?,?)', (data['uid'], int(msg.text)))
+    c.execute('INSERT INTO users(id,requests_left) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET requests_left=excluded.requests_left', (data['uid'], int(msg.text)))
     conn.commit()
-    await msg.answer(f'✅ Granted {msg.text} requests to user {data['uid']}')
+    uid_set = data.get('uid')
+    await msg.answer(f"✅ Granted {msg.text} requests to user {uid_set}")
     await state.clear()
 
 @dp.callback_query(F.data in ['block_user','unblock_user'])
