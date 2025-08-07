@@ -248,18 +248,13 @@ async def unblock_user(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.wait_username)
     await call.answer()
 
-# New: Reset trial flow
-@dp.callback_query(F.data=='reset_trial')
-async def reset_trial_callback(call: CallbackQuery, state: FSMContext):
+# New: Reset trial flow@dp.callback_query(F.data=='reset_trial')async def reset_trial_callback(call: CallbackQuery, state: FSMContext):(call: CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id):
         return await call.answer('Access denied', show_alert=True)
     # Acknowledge the button press to stop loading spinner
     await call.answer()
     await call.message.answer('🆔 Enter user ID to reset trial:')
-    await state.set_state(AdminStates.wait_reset_id)
-
-@dp.message(AdminStates.wait_reset_id)
-async def reset_trial_execute(msg: Message, state: FSMContext):
+    await state.set_state(AdminStates.wait_reset_id)@dp.message(AdminStates.wait_reset_id)async def reset_trial_execute(msg: Message, state: FSMContext):(msg: Message, state: FSMContext):
     if not msg.text.isdigit():
         return await msg.answer('❌ ID must be numeric')
     uid = int(msg.text)
