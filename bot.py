@@ -248,27 +248,33 @@ async def search_handler(message: Message):
     if message.from_user.username:
         c.execute('UPDATE users SET username=? WHERE id=?', (message.from_user.username, message.from_user.id))
         conn.commit()
+
     uid = message.from_user.id
-    query = message.text.strip()
+    query = (message.text or '').strip()
+
     # Block checks
     c.execute('SELECT is_blocked, hidden_data, requests_left, free_used, subs_until FROM users WHERE id=?', (uid,))
-    row = c.fetchone() or (0,0,0,0,0)
+    row = c.fetchone() or (0, 0, 0, 0, 0)
     is_blocked, hidden_data, requests_left, free_used, subs_until = row
     now = int(time.time())
+
     if is_blocked:
         return await message.answer('🚫 You are blocked.')
     if hidden_data:
         return await message.answer('🚫 This user data is hidden.')
     if query in ADMIN_HIDDEN:
         return await message.answer('🚫 This query is prohibited.')
+
     # Flood check (run before consuming limits)
     if check_flood(uid):
         return await message.answer('⛔ Flood detected. Try again later.')
+
     # Use manual requests first
     if requests_left > 0:
         c.execute('UPDATE users SET requests_left=requests_left-1 WHERE id=?', (uid,))
         conn.commit()
     else:
+        # No active sub - consume trial if available
         if subs_until <= now and free_used >= TRIAL_LIMIT:
             c.execute('UPDATE users SET trial_expired=1 WHERE id=?', (uid,))
             conn.commit()
@@ -276,11 +282,13 @@ async def search_handler(message: Message):
         if subs_until <= now:
             c.execute('UPDATE users SET free_used=free_used+1 WHERE id=?', (uid,))
             conn.commit()
-        # Blacklist
+
+    # Blacklist
     c.execute('SELECT 1 FROM blacklist WHERE value=?', (query,))
     if c.fetchone():
         return await message.answer('🔒 Access denied.')
-    # API Call
+
+    # API Call (safe multiline f-string)
     await message.answer(
         f"🕷️ Connecting to nodes...
 "
@@ -288,34 +296,50 @@ async def search_handler(message: Message):
     )
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"https://api.usersbox.ru/v1/search?q={query}", headers={'Authorization':USERSBOX_API_KEY}, timeout=10) as resp:
+            async with session.get(
+                f"https://api.usersbox.ru/v1/search?q={query}",
+                headers={'Authorization': USERSBOX_API_KEY},
+                timeout=10
+            ) as resp:
                 if resp.status != 200:
                     return await message.answer(f'⚠️ API error: {resp.status}')
                 result = await resp.json()
     except (ClientError, asyncio.TimeoutError) as e:
         logging.error(f'API request failed: {e}')
         return await message.answer('⚠️ Network error. Try again later.')
-    if result.get('status')!='success' or result.get('data',{}).get('count',0)==0:
+
+    if result.get('status') != 'success' or result.get('data', {}).get('count', 0) == 0:
         return await message.answer('📡 No match found.')
-    # Build HTML report
+
+    # Build HTML report (dark hacker style)
     def beautify_key(k):
         mapping = {
-            'full_name':'Имя','phone':'Телефон','inn':'ИНН',
-            'email':'Email','first_name':'Имя','last_name':'Фамилия',
-            'middle_name':'Отчество','birth_date':'Дата рождения','gender':'Пол'
+            'full_name': 'Имя', 'phone': 'Телефон', 'inn': 'ИНН',
+            'email': 'Email', 'first_name': 'Имя', 'last_name': 'Фамилия',
+            'middle_name': 'Отчество', 'birth_date': 'Дата рождения', 'gender': 'Пол',
+            'passport_series': 'Серия паспорта', 'passport_number': 'Номер паспорта',
+            'passport_date': 'Дата выдачи паспорта'
         }
-        return mapping.get(k,k)
+        return mapping.get(k, k)
+
     blocks = []
     for item in result['data']['items']:
-        hdr = f"☠ {item.get('source',{}).get('database','?')}"
+        hdr = f"☠ {item.get('source', {}).get('database', '?')}"
         lines = []
-        for hit in item.get('hits',{}).get('items',[]):
-            for k,v in hit.items():
-                if not v: continue
-                val = ', '.join(str(x) for x in (v if isinstance(v,list) else [v]))
-                lines.append(f"<div class='row'><span class='key'>{beautify_key(k)}:</span><span class='val'>{val}</span></div>")
+        for hit in item.get('hits', {}).get('items', []):
+            for k, v in hit.items():
+                if not v:
+                    continue
+                val = ', '.join(str(x) for x in (v if isinstance(v, list) else [v]))
+                lines.append(
+                    f"<div class='row'><span class='key'>{beautify_key(k)}:</span>"
+                    f"<span class='val'>{val}</span></div>"
+                )
         if lines:
-            blocks.append(f"<div class='block'><div class='header'>{hdr}</div>{''.join(lines)}</div>")
+            blocks.append(
+                f"<div class='block'><div class='header'>{hdr}</div>{''.join(lines)}</div>"
+            )
+
     blocks_html = ''.join(blocks)
     html = f"""
     <html>
@@ -377,12 +401,15 @@ async def search_handler(message: Message):
     </body>
     </html>
     """
-    # Write to /tmp (writable on Koyeb/most serverless)
+
+    # Write to /tmp (writable on Koyeb)
     with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html', dir='/tmp', encoding='utf-8') as tf:
         tf.write(html)
         tmp_path = tf.name
+
     await message.answer('Found data, sending report...')
     await message.answer_document(FSInputFile(tmp_path, filename=f"{query}.html"))
+
     try:
         os.remove(tmp_path)
     except Exception:
