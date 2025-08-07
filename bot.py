@@ -21,6 +21,9 @@ from aiohttp import web, ClientError
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 USERSBOX_API_KEY = os.getenv('USERSBOX_API_KEY')
 CRYPTOPAY_TOKEN = os.getenv('CRYPTOPAY_TOKEN')
+# API token from @CryptoBot -> Crypto Pay -> Create App
+auth_warning = ''
+CRYPTOPAY_API_TOKEN = os.getenv('CRYPTOPAY_API_TOKEN')
 OWNER_ID = int(os.getenv('OWNER_ID', '0'))
 BASE_CURRENCY = os.getenv('BASE_CURRENCY', 'USDT')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
@@ -124,29 +127,8 @@ async def start_handler(message: Message):
     text = message.text or ''
     parts = text.split(maxsplit=1)
     arg = parts[1] if len(parts)>1 else ''
-    # Handle deep-link payment
-    if arg.startswith('merchant_'):
-        parts = arg.split('_')
-        if len(parts) >= 6:
-            _, token, price, currency, uid_str, plan = parts[:6]
-            if token==CRYPTOPAY_TOKEN and plan in TARIFFS:
-                c.execute('SELECT 1 FROM payments WHERE payload=?', (arg,))
-                if not c.fetchone():
-                    if plan=='hide_data':
-                        c.execute('UPDATE users SET hidden_data=1 WHERE id=?', (int(uid_str),))
-                    else:
-                        days = TARIFFS[plan]['days']
-                        subs = int(time.time()) + days*86400
-                        c.execute(
-                        'INSERT INTO users(id,subs_until,free_used) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET subs_until=excluded.subs_until',
-                        (int(uid_str), subs, 0)
-                    )
-                    c.execute('INSERT INTO payments(payload,user_id,plan,paid_at) VALUES(?,?,?,?)',
-                              (arg, int(uid_str), plan, int(time.time())))
-                    conn.commit()
-                    await message.answer(f"✅ Plan '{plan}' activated.")
-                    return
-    # Regular /start
+    # Handle deep-link payment (deprecated deep-link flow removed).
+# Regular /start
     uid = message.from_user.id
     c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
     # store/update username on start
@@ -173,14 +155,57 @@ async def start_handler(message: Message):
 @dp.callback_query(F.data.startswith('buy_'))
 async def buy_plan(callback: CallbackQuery):
     plan = callback.data.split('_',1)[1]
-    if plan in TARIFFS:
-        price = TARIFFS[plan]['price']
-        payload = f"merchant_{CRYPTOPAY_TOKEN}_{price}_{BASE_CURRENCY}_{callback.from_user.id}_{plan}_{int(time.time())}"
-        link = f"https://t.me/CryptoBot?start={payload}"
-        await callback.message.answer(f"💳 Pay for {plan} (${price}):\n{link}", disable_web_page_preview=True)
-        await callback.answer()
+    if plan not in TARIFFS:
+        return await callback.answer('Unknown plan', show_alert=True)
+    price = TARIFFS[plan]['price']
+    payload = f"pay_{callback.from_user.id}_{plan}_{int(time.time())}"
+    body = {
+        'asset': BASE_CURRENCY,
+        'amount': str(price),
+        'description': f"n3l0x: {plan} plan",
+        'payload': payload,
+        'allow_comments': False,
+        'allow_anonymous': True,
+        'expires_in': 1800
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                'https://pay.crypt.bot/api/createInvoice',
+                headers={'Crypto-Pay-API-Token': CRYPTOPAY_API_TOKEN},
+                json=body,
+                timeout=10
+            ) as resp:
+                data = await resp.json()
+    except Exception as e:
+        logging.exception('createInvoice failed: %s', e)
+        return await callback.message.answer('⚠️ Failed to contact Crypto Pay. Try again later.')
 
-# Admin Panel
+    if not data.get('ok'):
+        return await callback.message.answer(f"⚠️ Crypto Pay error: {data}")
+
+    inv = data['result']
+    url = inv.get('bot_invoice_url') or inv.get('pay_url')
+    if not url:
+        return await callback.message.answer('⚠️ Unexpected Crypto Pay response.')
+
+    # save pending payment record (optional)
+    try:
+        c.execute('INSERT OR IGNORE INTO payments(payload,user_id,plan,paid_at) VALUES(?,?,?,?)',
+                  (payload, callback.from_user.id, plan, 0))
+        conn.commit()
+    except Exception:
+        pass
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='💳 Pay in CryptoBot', url=url)]])
+    await callback.message.answer(
+        f"💳 You chose <b>{plan}</b> — <b>${price}</b> in {BASE_CURRENCY}.
+"
+        f"Tap the button below to pay via @CryptoBot.",
+        reply_markup=kb
+    )
+    await callback.answer()
+
 @dp.message(Command("admin322"))
 async def admin_menu(message: Message):
     if not is_admin(message.from_user.id): return
@@ -293,8 +318,8 @@ async def search_handler(message: Message):
 
     # API Call (safe multiline f-string)
     await message.answer(
-        f"🕷️ Connecting to nodes..."
-
+        f"🕷️ Connecting to nodes...
+" +
         f"🧬 Running recon on <code>{query}</code>"
     )
     try:
@@ -450,9 +475,44 @@ async def on_shutdown(app):
     await bot.delete_webhook()
     conn.close()
 
+# === Crypto Pay Webhook ===
+async def cryptopay_webhook(request: web.Request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({'ok': True})
+
+    inv = data.get('payload') or {}
+    status = inv.get('status')
+    payl = inv.get('payload')
+    if status == 'paid' and payl:
+        parts = str(payl).split('_')
+        # expected: pay_<uid>_<plan>_<ts>
+        if len(parts) >= 4 and parts[0] == 'pay':
+            try:
+                uid = int(parts[1])
+                plan = parts[2]
+                now = int(time.time())
+                if plan == 'hide_data':
+                    c.execute('UPDATE users SET hidden_data=1 WHERE id=?', (uid,))
+                elif plan in TARIFFS:
+                    days = TARIFFS[plan]['days']
+                    subs_until = now + days*86400
+                    c.execute('INSERT INTO users(id,subs_until,free_used) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET subs_until=excluded.subs_until', (uid, subs_until, 0))
+                c.execute('INSERT OR REPLACE INTO payments(payload,user_id,plan,paid_at) VALUES(?,?,?,?)', (payl, uid, plan, now))
+                conn.commit()
+                try:
+                    await bot.send_message(uid, f"✅ Payment received. Plan '{plan}' activated.")
+                except Exception:
+                    pass
+            except Exception:
+                logging.exception('Failed to activate payment')
+    return web.json_response({'ok': True})
+
 app = web.Application()
 app.router.add_get('/health', health)
-app.router.add_route('*', '/webhook', SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=WEBHOOK_SECRET))
+app.router.add_post('/webhook', SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=WEBHOOK_SECRET))
+app.router.add_post('/cryptopay', cryptopay_webhook)
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
