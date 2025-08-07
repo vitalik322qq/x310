@@ -2,11 +2,13 @@ import logging
 import aiohttp
 import sqlite3
 import time
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, FSInputFile
 from aiogram.filters import CommandStart
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.client.default import DefaultBotProperties
 from datetime import datetime
 import os
@@ -42,7 +44,10 @@ CREATE TABLE IF NOT EXISTS users (
     free_used INTEGER,
     trial_expired INTEGER DEFAULT 0,
     last_queries TEXT DEFAULT '',
-    hidden_data INTEGER DEFAULT 0
+    hidden_data INTEGER DEFAULT 0,
+    username TEXT DEFAULT '',
+    requests_left INTEGER DEFAULT 0,
+    is_blocked INTEGER DEFAULT 0
 )
 """)
 c.execute("""
@@ -62,6 +67,76 @@ def sub_keyboard():
         [InlineKeyboardButton(text="🔒 Lifetime - $299", callback_data="buy_lifetime")],
         [InlineKeyboardButton(text="🧊 Hide my data - $100", callback_data="buy_hide_data")]
     ])
+
+# === Admin FSM ===
+class AdminStates(StatesGroup):
+    wait_user_id = State()
+    wait_request_amount = State()
+    wait_username = State()
+
+@dp.message(F.text == "/admin322")
+async def admin_menu(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Выдать запросы", callback_data="give_requests")],
+        [InlineKeyboardButton(text="🚫 Заблокировать пользователя", callback_data="block_user")]
+    ])
+    await message.answer("<b>Админ-панель:</b>", reply_markup=keyboard)
+
+@dp.callback_query(F.data == "give_requests")
+async def handle_give_requests(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Доступ запрещён", show_alert=True)
+    await callback.message.answer("🆔 Введите Telegram ID пользователя:")
+    await state.set_state(AdminStates.wait_user_id)
+    await callback.answer()
+
+@dp.message(AdminStates.wait_user_id)
+async def get_user_id(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        return await message.answer("❌ ID должен быть числом. Попробуйте снова.")
+    await state.update_data(user_id=int(message.text))
+    await message.answer("🔢 Введите количество запросов (1-10):")
+    await state.set_state(AdminStates.wait_request_amount)
+
+@dp.message(AdminStates.wait_request_amount)
+async def set_requests(message: Message, state: FSMContext):
+    if not message.text.isdigit() or not 1 <= int(message.text) <= 10:
+        return await message.answer("❌ Введите число от 1 до 10.")
+    data = await state.get_data()
+    user_id = data["user_id"]
+    count = int(message.text)
+
+    c.execute("SELECT id FROM users WHERE id=?", (user_id,))
+    if not c.fetchone():
+        # Добавляем пользователя с нуля, если его нет
+        c.execute("INSERT INTO users (id, subs_until, free_used, trial_expired, last_queries, hidden_data, username, requests_left, is_blocked) VALUES (?,0,0,0,'',0,'',?,0)", (user_id, count))
+    else:
+        c.execute("UPDATE users SET requests_left=? WHERE id=?", (count, user_id))
+    conn.commit()
+
+    await message.answer(f"✅ Пользователю {user_id} выдано {count} запрос(ов).")
+    await state.clear()
+
+@dp.callback_query(F.data == "block_user")
+async def handle_block(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Доступ запрещён", show_alert=True)
+    await callback.message.answer("👤 Введите username пользователя (без @):")
+    await state.set_state(AdminStates.wait_username)
+    await callback.answer()
+
+@dp.message(AdminStates.wait_username)
+async def block_user(message: Message, state: FSMContext):
+    username = message.text.strip().lstrip("@")
+    c.execute("UPDATE users SET is_blocked=1 WHERE username=?", (username,))
+    conn.commit()
+    await message.answer(f"🚫 Пользователь @{username} заблокирован.")
+    await state.clear()
+
+# === /admin322 END ===
+
 
 @dp.message(CommandStart())
 async def start(message: Message):
@@ -174,7 +249,7 @@ async def search_handler(message: Message):
         if lines:
             blocks.append(f"<div class='block'><div class='header'>{header}</div>{''.join(lines)}</div>")
 
-    html = f"""
+    html = f\"\"\"
     <html>
     <head>
         <meta charset='UTF-8'>
@@ -233,9 +308,9 @@ async def search_handler(message: Message):
         {''.join(blocks)}
     </body>
     </html>
-    """
+    \"\"\"
 
-    filename = f"{query}.html"
+    filename = f\"{query}.html\"
     with open(filename, "w", encoding="utf-8") as f:
         f.write(html)
 
