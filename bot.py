@@ -36,8 +36,15 @@ OWNER_ID            = int(os.getenv('OWNER_ID', '0'))
 BASE_CURRENCY       = os.getenv('BASE_CURRENCY', 'USDT')
 WEBHOOK_URL         = os.getenv('WEBHOOK_URL')
 WEBHOOK_SECRET      = os.getenv('WEBHOOK_SECRET')
-DB_PATH             = os.getenv('DATABASE_PATH', 'n3lox_users.db')
+DB_PATH             = os.getenv('DATABASE_PATH')  # путь к файлу БД (можно не задавать)
 PORT                = int(os.getenv('PORT', '8080'))
+
+# Если volume смонтирован в /data — используем его по умолчанию
+if not DB_PATH:
+    DB_PATH = '/data/n3l0x.sqlite' if os.path.isdir('/data') else 'n3l0x.sqlite'
+
+# Автоподтверждать сессию после ребута (чтобы не требовать /start)
+AUTO_ACK_ON_BOOT = int(os.getenv('AUTO_ACK_ON_BOOT', '1'))
 
 # === Константы ===
 TARIFFS = {
@@ -54,49 +61,81 @@ PAGE_SIZE      = 10   # пользователей на страницу в сп
 AUTO_COLLAPSE_THRESHOLD = 20  # >N строк — сворачиваем группу по умолчанию
 
 # === Подключение к БД ===
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-conn.execute("PRAGMA journal_mode=WAL;")
-conn.execute("PRAGMA synchronous=NORMAL;")
+db_dir = os.path.dirname(DB_PATH) or '.'
+os.makedirs(db_dir, exist_ok=True)
+
+# autocommit; меньше шансов потерять транзакцию при резком ребуте
+conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
+with conn:
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    conn.execute("PRAGMA wal_autocheckpoint=1000;")
+
 c = conn.cursor()
 
 # Таблицы
-c.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY,
-    subs_until    INTEGER,
-    free_used     INTEGER,
-    trial_expired INTEGER DEFAULT 0,
-    last_queries  TEXT DEFAULT '',
-    hidden_data   INTEGER DEFAULT 0,
-    username      TEXT DEFAULT '',
-    requests_left INTEGER DEFAULT 0,
-    is_blocked    INTEGER DEFAULT 0,
-    boot_ack_ts   INTEGER DEFAULT 0
-)""")
-c.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
-c.execute("CREATE INDEX IF NOT EXISTS idx_users_isblocked ON users(is_blocked)")
-c.execute("""
-CREATE TABLE IF NOT EXISTS payments (
-    payload TEXT PRIMARY KEY,
-    user_id INTEGER,
-    plan    TEXT,
-    paid_at INTEGER
-)""")
-c.execute("""
-CREATE TABLE IF NOT EXISTS blacklist (
-    value TEXT PRIMARY KEY
-)""")
-c.execute("""
-CREATE TABLE IF NOT EXISTS meta (
-    key TEXT PRIMARY KEY,
-    value TEXT
-)""")
-conn.commit()
+with conn:
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id            INTEGER PRIMARY KEY,
+        subs_until    INTEGER,
+        free_used     INTEGER,
+        trial_expired INTEGER DEFAULT 0,
+        last_queries  TEXT DEFAULT '',
+        hidden_data   INTEGER DEFAULT 0,
+        username      TEXT DEFAULT '',
+        requests_left INTEGER DEFAULT 0,
+        is_blocked    INTEGER DEFAULT 0,
+        boot_ack_ts   INTEGER DEFAULT 0
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_users_isblocked ON users(is_blocked)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_users_subs_until ON users(subs_until)")
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS payments (
+        payload TEXT PRIMARY KEY,
+        user_id INTEGER,
+        plan    TEXT,
+        paid_at INTEGER
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_payments_paid_at ON payments(paid_at)")
+
+    # Сохраняем созданные инвойсы (pending), чтобы сверять по вебхуку и при reconcile
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS invoices (
+        invoice_id TEXT PRIMARY KEY,
+        payload    TEXT,
+        user_id    INTEGER,
+        plan       TEXT,
+        amount     REAL,
+        asset      TEXT,
+        status     TEXT,
+        created_at INTEGER
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_invoices_payload ON invoices(payload)")
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS blacklist (
+        value TEXT PRIMARY KEY
+    )""")
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )""")
 
 # BOOT_TS — метка текущего запуска
-BOOT_TS = str(int(time.time()))
-c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('BOOT_TS', ?)", (BOOT_TS,))
-conn.commit()
+BOOT_TS = int(time.time())
+with conn:
+    c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('BOOT_TS', ?)", (str(BOOT_TS),))
+
+# Автоматически подтверждаем «/start» после ребута, чтобы не блокировать команды
+if AUTO_ACK_ON_BOOT:
+    with conn:
+        c.execute("UPDATE users SET boot_ack_ts = ? WHERE boot_ack_ts < ?", (BOOT_TS, BOOT_TS))
 
 # === Админ-запрещённые запросы ===
 ADMIN_HIDDEN = [
@@ -153,10 +192,9 @@ def check_flood(uid: int) -> bool:
     last = row[0] if row else ''
     now = int(time.time())
     times = [int(t) for t in last.split(',') if t] + [now]
-    recent = [t for t in times if now - t <= FLOOD_WINDOW]
-    c.execute('UPDATE users SET last_queries=? WHERE id=?',
-              (','.join(map(str, recent)), uid))
-    conn.commit()
+    recent = [t for t in times if now - t <= FLOOD_WINDOW][-20:]  # максимум 20 отметок
+    with conn:
+        c.execute('UPDATE users SET last_queries=? WHERE id=?', (','.join(map(str, recent)), uid))
     return len(recent) > FLOOD_LIMIT or (len(recent) >= 2 and recent[-1] - recent[-2] < FLOOD_INTERVAL)
 
 async def setup_menu_commands():
@@ -175,6 +213,7 @@ async def setup_menu_commands():
 
 # ---------- НОРМАЛИЗАЦИЯ ТЕЛЕФОНОВ ----------
 _phone_clean_re = re.compile(r"[^\d]+")
+
 def normalize_phone(raw: str) -> str | None:
     if not raw or not any(ch.isdigit() for ch in raw):
         return None
@@ -183,8 +222,7 @@ def normalize_phone(raw: str) -> str | None:
         digits = digits[2:]
     if digits.startswith("0") and len(digits) == 10:
         digits = "38" + digits
-    if digits.startswith("380") and 11 <= len(digits) <= 13:
-        return digits
+    # UA строго 12 символов и 380-префикс
     if len(digits) == 12 and digits.startswith("380"):
         return digits
     return None
@@ -343,13 +381,13 @@ def users_list_keyboard(action: str, page: int = 0) -> InlineKeyboardMarkup:
 @dp.message(CommandStart())
 async def start_handler(message: Message):
     uid = message.from_user.id
-    c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)',
-              (uid,0,0,0))
-    if message.from_user.username:
-        c.execute('UPDATE users SET username=? WHERE id=?',
-                  (message.from_user.username, uid))
-    c.execute('UPDATE users SET boot_ack_ts=? WHERE id=?', (int(BOOT_TS), uid))
-    conn.commit()
+    with conn:
+        c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)',
+                  (uid,0,0,0))
+        if message.from_user.username:
+            c.execute('UPDATE users SET username=? WHERE id=?',
+                      (message.from_user.username, uid))
+        c.execute('UPDATE users SET boot_ack_ts=? WHERE id=?', (int(BOOT_TS), uid))
 
     hd, fu, te = c.execute(
         'SELECT hidden_data,free_used,trial_expired FROM users WHERE id=?', (uid,)
@@ -367,8 +405,8 @@ async def start_handler(message: Message):
 @dp.message(Command('status'))
 async def status_handler(message: Message):
     uid = message.from_user.id
-    c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
-    conn.commit()
+    with conn:
+        c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
     if need_start(uid):
         return await ask_press_start(message.chat.id)
 
@@ -379,15 +417,15 @@ async def status_handler(message: Message):
     now = int(time.time())
     if hd:
         return await message.answer('🔒 Ваши данные скрыты.')
-    sub = datetime.fromtimestamp(subs).strftime('%Y-%m-%d') if subs > now else 'none'
+    sub = datetime.fromtimestamp(subs).strftime('%Y-%m-%d') if subs and subs > now else 'none'
     free = 0 if te else TRIAL_LIMIT - fu
     await message.answer(f"📊 Подписка: {sub}\nБесплатно осталось: {free}\nРучных осталось: {rl}")
 
 @dp.message(Command('help'))
 async def help_handler(message: Message):
     uid = message.from_user.id
-    c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
-    conn.commit()
+    with conn:
+        c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
     if need_start(uid):
         return await ask_press_start(message.chat.id)
     await message.answer(
@@ -486,13 +524,13 @@ async def add_blacklist_values(msg: Message, state: FSMContext):
     values = [v.strip() for v in raw.split(',')]
     values = [v for v in values if v]
     added = 0
-    for v in values:
-        try:
-            c.execute("INSERT OR IGNORE INTO blacklist(value) VALUES(?)", (v,))
-            added += c.rowcount
-        except:
-            pass
-    conn.commit()
+    with conn:
+        for v in values:
+            try:
+                c.execute("INSERT OR IGNORE INTO blacklist(value) VALUES(?)", (v,))
+                added += c.rowcount
+            except:
+                pass
     await msg.answer(f"✅ В чёрный список добавлено: {added} из {len(values)}.\nЭти значения будут блокироваться при поиске.")
     await state.clear()
 
@@ -519,13 +557,13 @@ async def remove_blacklist_values(msg: Message, state: FSMContext):
     values = [v.strip() for v in raw.split(',')]
     values = [v for v in values if v]
     removed = 0
-    for v in values:
-        try:
-            c.execute("DELETE FROM blacklist WHERE value=?", (v,))
-            removed += c.rowcount
-        except:
-            pass
-    conn.commit()
+    with conn:
+        for v in values:
+            try:
+                c.execute("DELETE FROM blacklist WHERE value=?", (v,))
+                removed += c.rowcount
+            except:
+                pass
     await msg.answer(f"✅ Из чёрного списка удалено: {removed} из {len(values)}.")
     await state.clear()
 
@@ -609,28 +647,30 @@ async def user_selected(call: CallbackQuery, state: FSMContext):
         await state.set_state(AdminStates.wait_grant_amount)
 
     elif action == 'block':
-        c.execute('UPDATE users SET is_blocked=1 WHERE id=?', (uid,)); conn.commit()
+        with conn:
+            c.execute('UPDATE users SET is_blocked=1 WHERE id=?', (uid,))
         await call.message.answer(f'🚫 Заблокирован @{uname if uname!="ID "+str(uid) else uname}.')
 
     elif action == 'unblock':
-        c.execute('UPDATE users SET is_blocked=0 WHERE id=?', (uid,)); conn.commit()
+        with conn:
+            c.execute('UPDATE users SET is_blocked=0 WHERE id=?', (uid,))
         await call.message.answer(f'✅ Разблокирован @{uname if uname!="ID "+str(uid) else uname}.')
 
     elif action == 'reset':
-        c.execute('UPDATE users SET free_used=?, trial_expired=1 WHERE id=?', (TRIAL_LIMIT, uid)); conn.commit()
+        with conn:
+            c.execute('UPDATE users SET free_used=?, trial_expired=1 WHERE id=?', (TRIAL_LIMIT, uid))
         await call.message.answer(f'🔄 Триал завершён для @{uname if uname!="ID "+str(uid) else uname}.')
 
     elif action in ('sub_month','sub_quarter','sub_lifetime'):
         plan = action.split('_',1)[1]
-        now = int(time.time())
+        now_ts = int(time.time())
         old = c.execute('SELECT subs_until FROM users WHERE id=?', (uid,)).fetchone()
         old_until = int(old[0]) if old and old[0] else 0
-        new_until = max(now, old_until) + TARIFFS[plan]['days']*86400
-        c.execute('INSERT INTO users(id,subs_until) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET subs_until=excluded.subs_until',
-                  (uid, new_until))
-        # Триал считаем завершённым
-        c.execute('UPDATE users SET trial_expired=1 WHERE id=?', (uid,))
-        conn.commit()
+        new_until = max(now_ts, old_until) + TARIFFS[plan]['days']*86400
+        with conn:
+            c.execute('INSERT INTO users(id,subs_until) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET subs_until=excluded.subs_until',
+                      (uid, new_until))
+            c.execute('UPDATE users SET trial_expired=1 WHERE id=?', (uid,))
         until_txt = datetime.fromtimestamp(new_until).strftime('%Y-%m-%d')
         await call.message.answer(f'🎟 Подписка «{plan}» выдана @{uname if uname!="ID "+str(uid) else uname} до {until_txt}.')
 
@@ -655,8 +695,8 @@ async def grant_amount_input(msg: Message, state: FSMContext):
     if not uid:
         await state.clear()
         return await msg.answer('⚠️ Пользователь не выбран. Попробуйте снова.')
-    c.execute('UPDATE users SET requests_left=? WHERE id=?', (amount, uid))
-    conn.commit()
+    with conn:
+        c.execute('UPDATE users SET requests_left=? WHERE id=?', (amount, uid))
     uname = c.execute('SELECT username FROM users WHERE id=?', (uid,)).fetchone()
     uname = uname[0] if uname and uname[0] else f'ID {uid}'
     await msg.answer(f'✅ Выдано {amount} запросов @{uname if uname!="ID "+str(uid) else uname}.')
@@ -705,12 +745,12 @@ async def reset_all(call: CallbackQuery, state: FSMContext):
 @dp.message(F.text & ~F.text.startswith('/'))
 async def search_handler(message: Message):
     uid = message.from_user.id
-    c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)',
-              (uid,0,0,0))
-    if message.from_user.username:
-        c.execute('UPDATE users SET username=? WHERE id=?',
-                  (message.from_user.username, uid))
-    conn.commit()
+    with conn:
+        c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)',
+                  (uid,0,0,0))
+        if message.from_user.username:
+            c.execute('UPDATE users SET username=? WHERE id=?',
+                      (message.from_user.username, uid))
 
     # Гейт /start
     if need_start(uid):
@@ -723,7 +763,7 @@ async def search_handler(message: Message):
         'SELECT is_blocked,hidden_data,requests_left,free_used,subs_until,trial_expired '
         'FROM users WHERE id=?', (uid,)
     ).fetchone()
-    now = int(time.time())
+    now_ts = int(time.time())
 
     if not is_admin(uid):
         if is_blocked:
@@ -736,22 +776,22 @@ async def search_handler(message: Message):
             return await message.answer('⛔ Слишком часто. Попробуйте позже.')
 
         if requests_left > 0:
-            c.execute('UPDATE users SET requests_left=requests_left-1 WHERE id=?', (uid,))
-            conn.commit()
+            with conn:
+                c.execute('UPDATE users SET requests_left=requests_left-1 WHERE id=?', (uid,))
         else:
-            if subs_until > now:
+            if subs_until and subs_until > now_ts:
                 pass
             else:
                 if trial_expired:
                     return await message.answer('🔐 Триал окончен. Подпишитесь.', reply_markup=sub_keyboard())
                 if free_used < TRIAL_LIMIT:
-                    c.execute('UPDATE users SET free_used=free_used+1 WHERE id=?', (uid,))
-                    if free_used + 1 >= TRIAL_LIMIT:
-                        c.execute('UPDATE users SET trial_expired=1 WHERE id=?', (uid,))
-                    conn.commit()
+                    with conn:
+                        c.execute('UPDATE users SET free_used=free_used+1 WHERE id=?', (uid,))
+                        if free_used + 1 >= TRIAL_LIMIT:
+                            c.execute('UPDATE users SET trial_expired=1 WHERE id=?', (uid,))
                 else:
-                    c.execute('UPDATE users SET trial_expired=1 WHERE id=?', (uid,))
-                    conn.commit()
+                    with conn:
+                        c.execute('UPDATE users SET trial_expired=1 WHERE id=?', (uid,))
                     return await message.answer('🔐 Триал окончен. Подпишитесь.', reply_markup=sub_keyboard())
 
     # blacklist по оригиналу и по нормальному телефону
@@ -812,10 +852,8 @@ async def search_handler(message: Message):
             items = grouped.get(grp) or []
             if not items:
                 continue
-            # сортировка
             items.sort(key=lambda kv: sort_weight(grp, kv[0]))
             rows = "".join(f"<tr><td>{esc(k)}</td><td>{val}</td></tr>" for k, val in items)
-            # автосворачивание: первые две группы открыты, но если строк больше порога — закрыты
             open_default = (grp in GROUP_ORDER[:2]) and (len(items) <= AUTO_COLLAPSE_THRESHOLD)
             open_attr = " open" if open_default else ""
             group_html.append(f"""
@@ -976,11 +1014,26 @@ async def buy_plan(callback: CallbackQuery):
                 json=body, timeout=10
             ) as r:
                 data = await r.json()
-    except:
+    except Exception as e:
+        logging.exception("createInvoice error: %s", e)
         return await callback.message.answer('⚠️ Ошибка платежного сервиса.')
     if not data.get('ok'):
         return await callback.message.answer(f"⚠️ Ошибка: {data}")
-    url = data['result'].get('bot_invoice_url') or data['result'].get('pay_url')
+
+    inv = data['result']
+    inv_id = str(inv.get('invoice_id') or inv.get('id'))
+    url = inv.get('bot_invoice_url') or inv.get('pay_url')
+    # Сохраняем pending-инвойс
+    try:
+        with conn:
+            c.execute(
+                'INSERT OR REPLACE INTO invoices(invoice_id,payload,user_id,plan,amount,asset,status,created_at) '
+                'VALUES(?,?,?,?,?,?,?,?)',
+                (inv_id, payload, callback.from_user.id, plan, float(price), BASE_CURRENCY, 'pending', int(time.time()))
+            )
+    except Exception as e:
+        logging.warning("cannot upsert invoice: %s", e)
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='💳 Оплатить', url=url)]
     ])
@@ -992,44 +1045,136 @@ async def health(request):
     return web.Response(text='OK')
 
 async def cryptopay_webhook(request: web.Request):
+    """Обработка webhook от CryptoBot. Делаем idempotent по payload."""
     try:
         js = await request.json()
-    except:
+    except Exception:
         return web.json_response({'ok': True})
-    inv = js.get('invoice') or js.get('payload') or {}
-    if inv.get('status') == 'paid' and inv.get('payload'):
-        parts = inv['payload'].split('_')
-        if parts[0] == 'pay' and len(parts) >= 4:
+
+    inv = js.get('invoice') or js  # некоторые прокси оборачивают иначе
+    status = inv.get('status')
+    payload = inv.get('payload')
+
+    if status == 'paid' and payload:
+        # idempotency: если платеж с таким payload уже проведён — выходим
+        row = c.execute("SELECT 1 FROM payments WHERE payload=?", (payload,)).fetchone()
+        if row:
+            return web.json_response({'ok': True})
+
+        # попытка распарсить план и uid
+        try:
+            parts = payload.split('_')
+            if parts[0] != 'pay' or len(parts) < 4:
+                return web.json_response({'ok': True})
             uid, plan = int(parts[1]), parts[2]
-            now = int(time.time())
+        except Exception:
+            return web.json_response({'ok': True})
+
+        now_ts = int(time.time())
+        try:
             if plan == 'hide_data':
-                c.execute('UPDATE users SET hidden_data=1 WHERE id=?', (uid,))
+                with conn:
+                    c.execute('UPDATE users SET hidden_data=1 WHERE id=?', (uid,))
             else:
                 old = c.execute('SELECT subs_until FROM users WHERE id=?', (uid,)).fetchone()
                 old_until = int(old[0]) if old and old[0] else 0
-                ns = max(now, old_until) + TARIFFS[plan]['days']*86400
+                ns = max(now_ts, old_until) + TARIFFS[plan]['days']*86400
+                with conn:
+                    c.execute(
+                        'INSERT INTO users(id,subs_until,free_used,trial_expired) VALUES(?,?,?,1) '
+                        'ON CONFLICT(id) DO UPDATE SET subs_until=excluded.subs_until, free_used=0, trial_expired=1',
+                        (uid, ns, 0)
+                    )
+            with conn:
                 c.execute(
-                    'INSERT INTO users(id,subs_until,free_used) VALUES(?,?,?) '
-                    'ON CONFLICT(id) DO UPDATE SET subs_until=excluded.subs_until, free_used=0, trial_expired=1',
-                    (uid, ns, 0)
+                    'INSERT OR REPLACE INTO payments(payload,user_id,plan,paid_at) VALUES(?,?,?,?)',
+                    (payload, uid, plan, now_ts)
                 )
-            c.execute(
-                'INSERT OR REPLACE INTO payments(payload,user_id,plan,paid_at) VALUES(?,?,?,?)',
-                (inv['payload'], uid, plan, now)
-            )
-            conn.commit()
+                # помечаем invoice как paid, если есть в таблице
+                inv_id = str(inv.get('invoice_id') or inv.get('id') or '')
+                if inv_id:
+                    c.execute('UPDATE invoices SET status=? WHERE invoice_id=?', ('paid', inv_id))
+        except Exception as e:
+            logging.exception("cryptopay webhook processing error: %s", e)
+        try:
+            await bot.send_message(uid, f"✅ Оплата принята: {plan}")
+        except:
+            pass
+    return web.json_response({'ok': True})
+
+# === Reconcile: подхватить оплаченные инвойсы, которые могли прийти во время ребута ===
+async def reconcile_cryptopay_recent(hours: int = 24):
+    if not CRYPTOPAY_API_TOKEN:
+        return
+    since = int(time.time()) - hours*3600
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                'https://pay.crypt.bot/api/getInvoices',
+                headers={'Crypto-Pay-API-Token': CRYPTOPAY_API_TOKEN},
+                params={'count': 100, 'status': 'paid'},
+                timeout=12
+            ) as r:
+                data = await r.json()
+        if not data.get('ok'):
+            return
+        for itm in data['result'].get('items', []):
+            if itm.get('status') != 'paid':
+                continue
+            paid_at = int(itm.get('paid_at') or 0)
+            if paid_at and paid_at < since:
+                continue
+            payload = itm.get('payload')
+            if not payload:
+                continue
+            # уже проведён?
+            row = c.execute("SELECT 1 FROM payments WHERE payload=?", (payload,)).fetchone()
+            if row:
+                continue
+            # парсим uid/plan
             try:
-                await bot.send_message(uid, f"✅ Оплата принята: {plan}")
+                parts = payload.split('_')
+                if parts[0] != 'pay' or len(parts) < 4:
+                    continue
+                uid, plan = int(parts[1]), parts[2]
+            except Exception:
+                continue
+            now_ts = int(time.time())
+            try:
+                if plan == 'hide_data':
+                    with conn:
+                        c.execute('UPDATE users SET hidden_data=1 WHERE id=?', (uid,))
+                else:
+                    old = c.execute('SELECT subs_until FROM users WHERE id=?', (uid,)).fetchone()
+                    old_until = int(old[0]) if old and old[0] else 0
+                    ns = max(now_ts, old_until) + TARIFFS[plan]['days']*86400
+                    with conn:
+                        c.execute(
+                            'INSERT INTO users(id,subs_until,free_used,trial_expired) VALUES(?,?,?,1) '
+                            'ON CONFLICT(id) DO UPDATE SET subs_until=excluded.subs_until, free_used=0, trial_expired=1',
+                            (uid, ns, 0)
+                        )
+                with conn:
+                    c.execute(
+                        'INSERT OR REPLACE INTO payments(payload,user_id,plan,paid_at) VALUES(?,?,?,?)',
+                        (payload, uid, plan, paid_at or now_ts)
+                    )
+            except Exception as e:
+                logging.exception("reconcile error: %s", e)
+            try:
+                await bot.send_message(uid, f"✅ Подтвердил оплату: {plan} (reconcile)")
             except:
                 pass
-    return web.json_response({'ok': True})
+    except Exception as e:
+        logging.warning("reconcile request failed: %s", e)
 
 # === Startup/Shutdown ===
 async def on_startup(app):
     if WEBHOOK_URL:
         await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
     await setup_menu_commands()
-    logging.info("Меню команд установлено. BOOT_TS=%s", BOOT_TS)
+    asyncio.create_task(reconcile_cryptopay_recent(24))
+    logging.info("Меню команд установлено. BOOT_TS=%s, DB_PATH=%s", BOOT_TS, DB_PATH)
 
 async def on_shutdown(app):
     try:
