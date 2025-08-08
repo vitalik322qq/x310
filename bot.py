@@ -149,7 +149,8 @@ async def buy_plan(callback: CallbackQuery):
     price = TARIFFS[plan]['price']
     payload = f"pay_{callback.from_user.id}_{plan}_{int(time.time())}"
     body = {
-        'asset': BASE_CURRENCY, 'amount': str(price),
+        'asset': BASE_CURRENCY,
+        'amount': str(price),
         'description': f"n3l0x: {plan}",
         'payload': payload,
         'allow_comments': False, 'allow_anonymous': True,
@@ -186,7 +187,6 @@ async def admin_menu(message: Message):
     ])
     await message.answer('<b>Панель администратора:</b>', reply_markup=kb)
 
-# — Выдать запросы —
 @dp.callback_query(F.data=='give_requests')
 async def give_requests(call: CallbackQuery, state: FSMContext):
     await call.answer()
@@ -216,7 +216,6 @@ async def set_requests(msg: Message, state: FSMContext):
     await msg.answer(f"✅ Пользователю {data['uid']} выдано {n} запросов.")
     await state.clear()
 
-# — Блокировка / Разблокировка —
 @dp.callback_query(F.data=='block_user')
 async def block_user(call: CallbackQuery, state: FSMContext):
     await call.answer()
@@ -241,7 +240,6 @@ async def change_block(msg: Message, state: FSMContext):
     await msg.answer(f"{data['mode'].capitalize()}ed @{uname}")
     await state.clear()
 
-# — Завершение триала —
 @dp.callback_query(F.data=='reset_menu')
 async def reset_menu(call: CallbackQuery):
     await call.answer()
@@ -288,7 +286,6 @@ async def do_reset_by_id(msg: Message, state: FSMContext):
         await msg.answer(f"⚠️ Пользователь с ID {uid} не найден.")
     await state.clear()
 
-# — Поиск и HTML-отчёт —
 @dp.message(F.text & ~F.text.startswith('/'))
 async def search_handler(message: Message):
     uid = message.from_user.id
@@ -305,6 +302,7 @@ async def search_handler(message: Message):
     is_blocked, hidden_data, requests_left, free_used, subs_until, trial_expired = c.execute(
         'SELECT is_blocked,hidden_data,requests_left,free_used,subs_until,trial_expired '
         'FROM users WHERE id=?', (uid,)
+
     ).fetchone()
     now = int(time.time())
 
@@ -383,26 +381,91 @@ async def search_handler(message: Message):
 </div>""")
 
     html = f"""<!DOCTYPE html>
-<html lang="ru"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>n3l0x Intelligence Report</title>
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Permanent+Marker&display=swap');
-body {{ margin:0; background:#000; color:#E0E0E0; font-family:Courier,monospace; }}
-h1 {{ text-align:center; padding:16px; color:#39FF14; text-shadow:0 0 6px #39FF14; }}
-.report {{ display:flex; flex-wrap:wrap; justify-content:center; gap:16px; padding:16px; }}
-.block {{ background:#111; border:2px solid #39FF14; border-radius:8px; width:320px; overflow:auto; }}
-.block .graffiti {{ margin:12px 0; font-family:'Permanent Marker',monospace; color:#FF33CC; text-shadow:0 0 8px #FF33CC; text-align:center; font-size:1.2em; }}
-table {{ width:100%; border-collapse:collapse; margin-bottom:16px; }}
-th {{ background:#39FF14; color:#000; padding:8px; }}
-td {{ background:#222; color:#E0E0E0; padding:8px; }}
-tr:nth-child(even) td {{ background:#1A1A1A; }}
-@media(max-width:600px) {{ .block {{ width:90%; }} }}
-</style>
-</head><body>
-<h1>n3l0x Intelligence Report</h1>
-<div class="report">{''.join(blocks)}</div>
-</body></html>"""
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>n3l0x Intelligence Report</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Inconsolata&display=swap');
+    body {{
+      margin: 0;
+      background: #0b0c10;
+      color: #c5c6c7;
+      font-family: 'Inconsolata', monospace;
+      line-height: 1.4;
+    }}
+    h1 {{
+      text-align: center;
+      padding: 20px 0;
+      margin: 0;
+      color: #66fcf1;
+      font-family: 'Orbitron', sans-serif;
+      text-shadow: 0 0 8px rgba(102,252,241,0.8);
+      background: #1f2833;
+    }}
+    .report {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      padding: 16px;
+    }}
+    .block {{
+      background: #1f2833;
+      border: 1px solid #66fcf1;
+      border-radius: 8px;
+      box-shadow: 0 0 10px rgba(102,252,241,0.2);
+      overflow: hidden;
+    }}
+    .block .graffiti {{
+      margin: 0;
+      padding: 12px;
+      font-family: 'Orbitron', sans-serif;
+      color: #66fcf1;
+      text-shadow: 0 0 6px rgba(102,252,241,0.7);
+      font-size: 1.1em;
+      text-align: center;
+      background: #0b0c10;
+      border-bottom: 1px solid #66fcf1;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+    }}
+    th, td {{
+      padding: 8px;
+      text-align: left;
+      font-size: 0.9em;
+    }}
+    th {{
+      background: #45a29e;
+      color: #0b0c10;
+      font-weight: 400;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border: 1px solid #0b0c10;
+    }}
+    td {{
+      background: #0b0c10;
+      color: #c5c6c7;
+      border: 1px solid #1f2833;
+    }}
+    tr:nth-child(even) td {{
+      background: #1f2833;
+    }}
+    @media (max-width: 600px) {{
+      h1 {{ font-size: 1.4em; }}
+      .graffiti {{ font-size: 1em; }}
+    }}
+  </style>
+</head>
+<body>
+  <h1>n3l0x Intelligence Report</h1>
+  <div class="report">
+    {''.join(blocks)}
+  </div>
+</body>
+</html>"""
 
     with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html', dir='/tmp', encoding='utf-8') as tf:
         tf.write(html)
@@ -433,7 +496,6 @@ async def help_handler(message: Message):
         "Отправьте текст для поиска."
     )
 
-# === Webhook endpoints ===
 async def health(request): return web.Response(text='OK')
 
 async def cryptopay_webhook(request: web.Request):
@@ -451,7 +513,7 @@ async def cryptopay_webhook(request: web.Request):
                 c.execute('UPDATE users SET hidden_data=1 WHERE id=?', (uid,))
             else:
                 old = c.execute('SELECT subs_until FROM users WHERE id=?', (uid,)).fetchone()[0]
-                ns = max(now, old) + TARIFFS[plan]['days']*86400
+                ns = max(now, old) + TARIFFS[plan]['days'] * 86400
                 c.execute(
                     'INSERT INTO users(id,subs_until,free_used) VALUES(?,?,?) '
                     'ON CONFLICT(id) DO UPDATE SET subs_until=excluded.subs_until, free_used=0, trial_expired=1',
@@ -470,7 +532,8 @@ async def cryptopay_webhook(request: web.Request):
 
 app = web.Application()
 app.router.add_get('/health', health)
-app.router.add_route('*','/webhook', SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=WEBHOOK_SECRET))
+app.router.add_route('*','/webhook',
+                     SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=WEBHOOK_SECRET))
 app.router.add_post('/cryptopay', cryptopay_webhook)
 
 app.on_startup.append(lambda _: asyncio.create_task(
