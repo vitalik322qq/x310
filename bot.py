@@ -201,18 +201,23 @@ def check_flood(uid: int) -> bool:
     return len(recent) > FLOOD_LIMIT or (len(recent) >= 2 and recent[-1] - recent[-2] < FLOOD_INTERVAL)
 
 async def setup_menu_commands():
+    from aiogram.types import BotCommandScopeDefault, BotCommandScopeChat
+
+    # Команды для всех пользователей
     user_cmds = [
         BotCommand(command="start",  description="Запуск"),
         BotCommand(command="status", description="Статус подписки и лимитов"),
         BotCommand(command="help",   description="Справка"),
     ]
-    await bot.set_my_commands(user_cmds, scope=BotCommandScopeAllPrivateChats())
+    # Устанавливаем для всех (Default scope)
+    await bot.set_my_commands(user_cmds, scope=BotCommandScopeDefault())
+
+    # Дополняем скоп администратора, если OWNER_ID задан
     if OWNER_ID:
-        admin_cmds = user_cmds + [BotCommand(command="admin322", description="Панель администратора")]
-        try:
-            await bot.set_my_commands(admin_cmds, scope=BotCommandScopeChat(chat_id=OWNER_ID))
-        except Exception as e:
-            logging.warning(f"Не удалось выставить команды для OWNER_ID {OWNER_ID}: {e}")
+        admin_cmds = user_cmds + [
+            BotCommand(command="admin322", description="Панель администратора"),
+        ]
+        await bot.set_my_commands(admin_cmds, scope=BotCommandScopeChat(chat_id=OWNER_ID))
 
 # ---------- НОРМАЛИЗАЦИЯ ТЕЛЕФОНОВ ----------
 _phone_clean_re = re.compile(r"[^\d]+")
