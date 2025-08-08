@@ -432,17 +432,25 @@ async def status_handler(message: Message):
 @dp.message(Command('help'))
 async def help_handler(message: Message):
     uid = message.from_user.id
+    # Убедимся, что пользователь есть в БД
     with conn:
         c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
+    # Если нужно нажать /start после ребута
     if need_start(uid):
         return await ask_press_start(message.chat.id)
-    await message.answer(
+
+    # Формируем список команд
+    help_text = (
         "/start  – запуск/обновление сессии\n"
         "/status – статус и лимиты\n"
         "/help   – справка\n"
-        "/admin322 – панель администратора (только у админа)\n"
-        "Отправьте любой текст для поиска."
     )
+    # Добавляем админ-команду только для админа
+    if is_admin(uid):
+        help_text += "/admin322 – панель администратора\n"
+    help_text += "Отправьте любой текст для поиска."
+
+    await message.answer(help_text)
 
 # --- Админ-меню (с гейтом /start) ---
 @dp.message(Command('admin322'))
