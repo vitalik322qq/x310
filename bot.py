@@ -39,7 +39,7 @@ WEBHOOK_SECRET      = os.getenv('WEBHOOK_SECRET')
 DB_PATH = os.getenv('DATABASE_PATH')  # путь к файлу БД (можно не задавать)
 # Если volume смонтирован в /app/data — используем его по умолчанию
 if not DB_PATH:
-    DB_PATH = '/app/data/n3l0x.sqlite' if os.path.isdir('/app/data') else 'n3l0x.sqlite'  # путь к файлу БД (можно не задавать)
+    DB_PATH = '/app/data/n3l0x.sqlite' if os.path.isdir('/app/data') else 'n3l0x.sqlite'
 PORT                = int(os.getenv('PORT', '8080'))
 
 # Если volume смонтирован в /data — используем его по умолчанию
@@ -158,10 +158,92 @@ class AdminStates(StatesGroup):
     wait_blacklist_values    = State()
     wait_unblacklist_values  = State()
 
-# === Утилиты ===
+# ---------- Админ-UI инфраструктура (ЯКОРЬ + секции) ----------
+ADMIN_ANCHORS: dict[int, int] = {}        # chat_id -> message_id
+ADMIN_OPEN_SECTIONS: dict[int, set] = {}  # admin_id -> {"subs","bl","mod","utils"}
+
 def is_admin(uid: int) -> bool:
     return uid == OWNER_ID
 
+def grid(buttons: list[InlineKeyboardButton], cols: int = 2) -> list[list[InlineKeyboardButton]]:
+    rows, row = [], []
+    for b in buttons:
+        row.append(b)
+        if len(row) == cols:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    return rows
+
+async def admin_render(target: Message | CallbackQuery, text: str,
+                       kb: InlineKeyboardMarkup | None = None, *, reset: bool = False):
+    """
+    Рендерим админ-экран в одном «якорном» сообщении.
+    reset=True — создаём новый якорь (и удаляем старый).
+    """
+    if isinstance(target, Message):
+        chat_id = target.chat.id
+    else:
+        chat_id = target.message.chat.id
+
+    old_anchor = ADMIN_ANCHORS.get(chat_id)
+
+    if reset or not old_anchor:
+        if old_anchor:
+            try:
+                await bot.delete_message(chat_id, old_anchor)
+            except:
+                pass
+        msg = await bot.send_message(chat_id, text, reply_markup=kb)
+        ADMIN_ANCHORS[chat_id] = msg.message_id
+        return
+
+    try:
+        await bot.edit_message_text(chat_id=chat_id, message_id=old_anchor, text=text, reply_markup=kb)
+    except:
+        msg = await bot.send_message(chat_id, text, reply_markup=kb)
+        ADMIN_ANCHORS[chat_id] = msg.message_id
+
+def admin_kb_home(uid: int) -> InlineKeyboardMarkup:
+    opened = ADMIN_OPEN_SECTIONS.setdefault(uid, {"subs"})
+    subs_open = "subs" in opened
+    bl_open   = "bl"   in opened
+    mod_open  = "mod"  in opened
+    util_open = "utils" in opened
+
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.append([InlineKeyboardButton(text=("▼ " if subs_open else "► ") + "Подписки/Лимиты", callback_data="toggle:subs")])
+    if subs_open:
+        rows += grid([
+            InlineKeyboardButton(text="🎟 Выдать подписку", callback_data="grant_sub"),
+            InlineKeyboardButton(text="📊 Выдать запросы",  callback_data="give_requests"),
+            InlineKeyboardButton(text="⛔ Завершить триал",  callback_data="reset_menu"),
+        ], cols=2)
+
+    rows.append([InlineKeyboardButton(text=("▼ " if bl_open else "► ") + "Чёрный список / Скрытие", callback_data="toggle:bl")])
+    if bl_open:
+        rows += grid([
+            InlineKeyboardButton(text="🧊 Добавить значения",   callback_data="add_blacklist"),
+            InlineKeyboardButton(text="🗑 Удалить значения",     callback_data="remove_blacklist"),
+        ], cols=2)
+
+    rows.append([InlineKeyboardButton(text=("▼ " if mod_open else "► ") + "Модерация пользователей", callback_data="toggle:mod")])
+    if mod_open:
+        rows += grid([
+            InlineKeyboardButton(text="🚫 Заблокировать",  callback_data="block_user"),
+            InlineKeyboardButton(text="✅ Разблокировать",  callback_data="unblock_user"),
+        ], cols=2)
+
+    rows.append([InlineKeyboardButton(text=("▼ " if util_open else "► ") + "Сервис", callback_data="toggle:utils")])
+    if util_open:
+        rows += grid([
+            InlineKeyboardButton(text="🏠 Выйти из админки", callback_data="admin_close"),
+            InlineKeyboardButton(text="♻️ Обновить",         callback_data="admin_home"),
+        ], cols=2)
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+# === Утилиты ===
 def sub_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='🔒 ' + TARIFFS['month']['title'],     callback_data='buy_month')],
@@ -171,7 +253,6 @@ def sub_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def start_keyboard() -> ReplyKeyboardMarkup:
-    # Большая кнопка /start
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="/start")]],
         resize_keyboard=True, one_time_keyboard=True, input_field_placeholder="Нажмите /start, чтобы активировать сессию"
@@ -203,16 +284,13 @@ def check_flood(uid: int) -> bool:
 async def setup_menu_commands():
     from aiogram.types import BotCommandScopeDefault, BotCommandScopeChat
 
-    # Команды для всех пользователей
     user_cmds = [
         BotCommand(command="start",  description="Запуск"),
         BotCommand(command="status", description="Статус подписки и лимитов"),
         BotCommand(command="help",   description="Справка"),
     ]
-    # Устанавливаем для всех (Default scope)
     await bot.set_my_commands(user_cmds, scope=BotCommandScopeDefault())
 
-    # Дополняем скоп администратора, если OWNER_ID задан
     if OWNER_ID:
         admin_cmds = user_cmds + [
             BotCommand(command="admin322", description="Панель администратора"),
@@ -230,7 +308,6 @@ def normalize_phone(raw: str) -> str | None:
         digits = digits[2:]
     if digits.startswith("0") and len(digits) == 10:
         digits = "38" + digits
-    # UA строго 12 символов и 380-префикс
     if len(digits) == 12 and digits.startswith("380"):
         return digits
     return None
@@ -432,61 +509,65 @@ async def status_handler(message: Message):
 @dp.message(Command('help'))
 async def help_handler(message: Message):
     uid = message.from_user.id
-    # Убедимся, что пользователь есть в БД
     with conn:
         c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
-    # Если нужно нажать /start после ребута
     if need_start(uid):
         return await ask_press_start(message.chat.id)
 
-    # Формируем список команд
     help_text = (
         "/start  – запуск/обновление сессии\n"
         "/status – статус и лимиты\n"
         "/help   – справка\n"
     )
-    # Добавляем админ-команду только для админа
     if is_admin(uid):
         help_text += "/admin322 – панель администратора\n"
     help_text += "Отправьте любой текст для поиска."
-
     await message.answer(help_text)
 
-# --- Админ-меню (с гейтом /start) ---
+# --- Админ-меню: якорь + секции ---
 @dp.message(Command('admin322'))
 async def admin_menu(message: Message):
     if message.from_user.id != OWNER_ID:
         return
     if need_start(message.from_user.id):
         return await ask_press_start(message.chat.id)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='📊 Выдать запросы',    callback_data='give_requests')],
-        [InlineKeyboardButton(text='🎟 Дать подписку',     callback_data='grant_sub')],
-        [InlineKeyboardButton(text='🧊 Скрыть произвольные данные', callback_data='add_blacklist')],
-        [InlineKeyboardButton(text='🗑 Снять скрытие (удалить из ЧС)', callback_data='remove_blacklist')],
-        [InlineKeyboardButton(text='🚫 Заблокировать',     callback_data='block_user')],
-        [InlineKeyboardButton(text='✅ Разблокировать',    callback_data='unblock_user')],
-        [InlineKeyboardButton(text='🔄 Завершить триал',   callback_data='reset_menu')],
-    ])
-    await message.answer('<b>Панель администратора:</b>', reply_markup=kb)
+    ADMIN_OPEN_SECTIONS[message.from_user.id] = {"subs"}
+    await admin_render(message, "<b>Панель администратора</b>", admin_kb_home(message.from_user.id), reset=True)
+    # по желанию — убрать командное сообщение
+    try:
+        await message.delete()
+    except:
+        pass
 
 @dp.callback_query(F.data == 'admin_home')
 async def admin_home(call: CallbackQuery):
-    if not is_admin(call.from_user.id):
-        return await call.answer()
+    if not is_admin(call.from_user.id): return await call.answer()
     if need_start(call.from_user.id):
-        await ask_press_start(call.message.chat.id)
-        return await call.answer()
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='📊 Выдать запросы',    callback_data='give_requests')],
-        [InlineKeyboardButton(text='🎟 Дать подписку',     callback_data='grant_sub')],
-        [InlineKeyboardButton(text='🧊 Скрыть произвольные данные', callback_data='add_blacklist')],
-        [InlineKeyboardButton(text='🗑 Снять скрытие (удалить из ЧС)', callback_data='remove_blacklist')],
-        [InlineKeyboardButton(text='🚫 Заблокировать',     callback_data='block_user')],
-        [InlineKeyboardButton(text='✅ Разблокировать',    callback_data='unblock_user')],
-        [InlineKeyboardButton(text='🔄 Завершить триал',   callback_data='reset_menu')],
-    ])
-    await call.message.edit_text('<b>Панель администратора:</b>', reply_markup=kb)
+        await ask_press_start(call.message.chat.id); return await call.answer()
+    await admin_render(call, "<b>Панель администратора</b>", admin_kb_home(call.from_user.id))
+    await call.answer()
+
+@dp.callback_query(F.data == 'admin_close')
+async def admin_close(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return await call.answer()
+    chat_id = call.message.chat.id
+    anchor = ADMIN_ANCHORS.pop(chat_id, None)
+    if anchor:
+        try:
+            await bot.delete_message(chat_id, anchor)
+        except:
+            pass
+    await call.message.answer("Админ-панель закрыта.")
+    await call.answer()
+
+@dp.callback_query(F.data.startswith('toggle:'))
+async def admin_toggle(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return await call.answer()
+    key = call.data.split(':',1)[1]
+    opened = ADMIN_OPEN_SECTIONS.setdefault(call.from_user.id, set())
+    if key in opened: opened.remove(key)
+    else: opened.add(key)
+    await admin_render(call, "<b>Панель администратора</b>", admin_kb_home(call.from_user.id))
     await call.answer()
 
 # --- ДАТЬ ПОДПИСКУ: выбор плана -> список пользователей ---
@@ -501,7 +582,7 @@ async def grant_sub_menu(call: CallbackQuery):
         [InlineKeyboardButton(text='💎 ' + TARIFFS['lifetime']['title'], callback_data='sub_plan:lifetime')],
         [InlineKeyboardButton(text='🏠 В админ-меню', callback_data='admin_home')],
     ])
-    await call.message.answer('Выберите план подписки:', reply_markup=kb)
+    await admin_render(call, 'Выберите план подписки:', kb)
     await call.answer()
 
 @dp.callback_query(F.data.startswith('sub_plan:'))
@@ -513,7 +594,7 @@ async def sub_plan_pick_users(call: CallbackQuery):
     if plan not in ('month','quarter','lifetime'):
         return await call.answer('Неверный план', show_alert=True)
     kb = users_list_keyboard(action=f'sub_{plan}', page=0)
-    await call.message.answer(f'👥 Выберите пользователя для начисления подписки ({plan})', reply_markup=kb)
+    await admin_render(call, f'👥 Выберите пользователя для начисления подписки ({plan})', kb)
     await call.answer()
 
 # --- Cкрыть/раскрыть произвольные данные (blacklist) ---
@@ -522,7 +603,7 @@ async def add_blacklist_start(call: CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id): return await call.answer()
     if need_start(call.from_user.id):
         await ask_press_start(call.message.chat.id); return await call.answer()
-    await call.message.answer("Вставьте значения через запятую, которые нужно скрыть (ФИО, телефоны, e-mail, даты и т.д.).\nПример:\n<code>Иванов Иван, 380661112233, 10.07.1999, test@example.com</code>")
+    await admin_render(call, "Вставьте значения через запятую, которые нужно скрыть (ФИО, телефоны, e-mail, даты и т.д.).\nПример:\n<code>Иванов Иван, 380661112233, 10.07.1999, test@example.com</code>")
     await state.set_state(AdminStates.wait_blacklist_values)
     await call.answer()
 
@@ -536,7 +617,7 @@ async def add_blacklist_values(msg: Message, state: FSMContext):
     raw = (msg.text or "").strip()
     if not raw:
         await state.clear()
-        return await msg.answer("Пустой ввод. Отменено.")
+        return await admin_render(msg, "Пустой ввод. Отменено.")
     values = [v.strip() for v in raw.split(',')]
     values = [v for v in values if v]
     added = 0
@@ -547,7 +628,7 @@ async def add_blacklist_values(msg: Message, state: FSMContext):
                 added += c.rowcount
             except:
                 pass
-    await msg.answer(f"✅ В чёрный список добавлено: {added} из {len(values)}.\nЭти значения будут блокироваться при поиске.")
+    await admin_render(msg, f"✅ В чёрный список добавлено: {added} из {len(values)}.\nЭти значения будут блокироваться при поиске.")
     await state.clear()
 
 @dp.callback_query(F.data == 'remove_blacklist')
@@ -555,7 +636,7 @@ async def remove_blacklist_start(call: CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id): return await call.answer()
     if need_start(call.from_user.id):
         await ask_press_start(call.message.chat.id); return await call.answer()
-    await call.message.answer("Вставьте значения через запятую, которые нужно удалить из чёрного списка.\nПример:\n<code>Иванов Иван, 380661112233, 10.07.1999</code>")
+    await admin_render(call, "Вставьте значения через запятую, которые нужно удалить из чёрного списка.\nПример:\n<code>Иванов Иван, 380661112233, 10.07.1999</code>")
     await state.set_state(AdminStates.wait_unblacklist_values)
     await call.answer()
 
@@ -569,7 +650,7 @@ async def remove_blacklist_values(msg: Message, state: FSMContext):
     raw = (msg.text or "").strip()
     if not raw:
         await state.clear()
-        return await msg.answer("Пустой ввод. Отменено.")
+        return await admin_render(msg, "Пустой ввод. Отменено.")
     values = [v.strip() for v in raw.split(',')]
     values = [v for v in values if v]
     removed = 0
@@ -580,7 +661,7 @@ async def remove_blacklist_values(msg: Message, state: FSMContext):
                 removed += c.rowcount
             except:
                 pass
-    await msg.answer(f"✅ Из чёрного списка удалено: {removed} из {len(values)}.")
+    await admin_render(msg, f"✅ Из чёрного списка удалено: {removed} из {len(values)}.")
     await state.clear()
 
 # === Листинги пользователей (прочие экраны) ===
@@ -590,7 +671,7 @@ async def give_requests_list(call: CallbackQuery, state: FSMContext):
     if need_start(call.from_user.id):
         await ask_press_start(call.message.chat.id); return await call.answer()
     kb = users_list_keyboard(action='give', page=0)
-    await call.message.answer('👥 Выберите пользователя для выдачи запросов:', reply_markup=kb)
+    await admin_render(call, '👥 Выберите пользователя для выдачи запросов:', kb)
     await call.answer()
 
 @dp.callback_query(F.data == 'block_user')
@@ -599,7 +680,7 @@ async def block_user_list(call: CallbackQuery, state: FSMContext):
     if need_start(call.from_user.id):
         await ask_press_start(call.message.chat.id); return await call.answer()
     kb = users_list_keyboard(action='block', page=0)
-    await call.message.answer('👥 Кого заблокировать?', reply_markup=kb)
+    await admin_render(call, '👥 Кого заблокировать?', kb)
     await call.answer()
 
 @dp.callback_query(F.data == 'unblock_user')
@@ -608,7 +689,7 @@ async def unblock_user_list(call: CallbackQuery, state: FSMContext):
     if need_start(call.from_user.id):
         await ask_press_start(call.message.chat.id); return await call.answer()
     kb = users_list_keyboard(action='unblock', page=0)
-    await call.message.answer('👥 Кого разблокировать?', reply_markup=kb)
+    await admin_render(call, '👥 Кого разблокировать?', kb)
     await call.answer()
 
 @dp.callback_query(F.data == 'reset_menu')
@@ -621,7 +702,7 @@ async def reset_menu(call: CallbackQuery):
         [InlineKeyboardButton(text='🔍 Завершить триал у конкретного', callback_data='reset_pick')],
         [InlineKeyboardButton(text='🏠 В админ-меню', callback_data='admin_home')],
     ])
-    await call.message.answer('Выберите режим завершения триала:', reply_markup=kb)
+    await admin_render(call, 'Выберите режим завершения триала:', kb)
     await call.answer()
 
 @dp.callback_query(F.data == 'reset_pick')
@@ -630,7 +711,7 @@ async def reset_pick_list(call: CallbackQuery):
     if need_start(call.from_user.id):
         await ask_press_start(call.message.chat.id); return await call.answer()
     kb = users_list_keyboard(action='reset', page=0)
-    await call.message.answer('👥 Выберите пользователя для завершения триала:', reply_markup=kb)
+    await admin_render(call, '👥 Выберите пользователя для завершения триала:', kb)
     await call.answer()
 
 @dp.callback_query(F.data.startswith('list:'))
@@ -641,10 +722,7 @@ async def paginate_users(call: CallbackQuery):
     _, action, page_s = call.data.split(':', 2)
     page = int(page_s)
     kb = users_list_keyboard(action=action, page=page)
-    try:
-        await call.message.edit_reply_markup(reply_markup=kb)
-    except:
-        await call.message.answer('Обновил список.', reply_markup=kb)
+    await admin_render(call, 'Обновил список.', kb)
     await call.answer()
 
 @dp.callback_query(F.data.startswith('select:'))
@@ -656,26 +734,27 @@ async def user_selected(call: CallbackQuery, state: FSMContext):
     uid = int(uid_s)
     row = c.execute('SELECT username FROM users WHERE id=?', (uid,)).fetchone()
     uname = row[0] if row and row[0] else f'ID {uid}'
+    uname_print = f'@{uname}' if uname and not uname.startswith('ID ') else uname
 
     if action == 'give':
         await state.update_data(grant_uid=uid)
-        await call.message.answer(f'Выбран @{uname if uname!="ID "+str(uid) else uname}.\n🔢 Введите количество запросов (1–100):')
+        await admin_render(call, f'Выбран {uname_print}.\n🔢 Введите количество запросов (1–100):')
         await state.set_state(AdminStates.wait_grant_amount)
 
     elif action == 'block':
         with conn:
             c.execute('UPDATE users SET is_blocked=1 WHERE id=?', (uid,))
-        await call.message.answer(f'🚫 Заблокирован @{uname if uname!="ID "+str(uid) else uname}.')
+        await admin_render(call, f'🚫 Заблокирован {uname_print}.', admin_kb_home(call.from_user.id))
 
     elif action == 'unblock':
         with conn:
             c.execute('UPDATE users SET is_blocked=0 WHERE id=?', (uid,))
-        await call.message.answer(f'✅ Разблокирован @{uname if uname!="ID "+str(uid) else uname}.')
+        await admin_render(call, f'✅ Разблокирован {uname_print}.', admin_kb_home(call.from_user.id))
 
     elif action == 'reset':
         with conn:
             c.execute('UPDATE users SET free_used=?, trial_expired=1 WHERE id=?', (TRIAL_LIMIT, uid))
-        await call.message.answer(f'🔄 Триал завершён для @{uname if uname!="ID "+str(uid) else uname}.')
+        await admin_render(call, f'🔄 Триал завершён для {uname_print}.', admin_kb_home(call.from_user.id))
 
     elif action in ('sub_month','sub_quarter','sub_lifetime'):
         plan = action.split('_',1)[1]
@@ -688,10 +767,10 @@ async def user_selected(call: CallbackQuery, state: FSMContext):
                       (uid, new_until))
             c.execute('UPDATE users SET trial_expired=1 WHERE id=?', (uid,))
         until_txt = datetime.fromtimestamp(new_until).strftime('%Y-%m-%d')
-        await call.message.answer(f'🎟 Подписка «{plan}» выдана @{uname if uname!="ID "+str(uid) else uname} до {until_txt}.')
+        await admin_render(call, f'🎟 Подписка «{plan}» выдана {uname_print} до {until_txt}.', admin_kb_home(call.from_user.id))
 
     else:
-        await call.message.answer('Неизвестное действие.')
+        await admin_render(call, 'Неизвестное действие.', admin_kb_home(call.from_user.id))
     await call.answer()
 
 @dp.message(AdminStates.wait_grant_amount)
@@ -701,24 +780,25 @@ async def grant_amount_input(msg: Message, state: FSMContext):
     if need_start(msg.from_user.id):
         await state.clear()
         return await ask_press_start(msg.chat.id)
-    if not msg.text.isdigit():
-        return await msg.answer('Введите число 1–100.')
+    if not (msg.text or "").isdigit():
+        return await admin_render(msg, 'Введите число 1–100.')
     amount = int(msg.text)
     if not (1 <= amount <= 100):
-        return await msg.answer('Диапазон 1–100.')
+        return await admin_render(msg, 'Диапазон 1–100.')
     data = await state.get_data()
     uid = data.get('grant_uid')
     if not uid:
         await state.clear()
-        return await msg.answer('⚠️ Пользователь не выбран. Попробуйте снова.')
+        return await admin_render(msg, '⚠️ Пользователь не выбран. Попробуйте снова.')
     with conn:
         c.execute('UPDATE users SET requests_left=? WHERE id=?', (amount, uid))
     uname = c.execute('SELECT username FROM users WHERE id=?', (uid,)).fetchone()
     uname = uname[0] if uname and uname[0] else f'ID {uid}'
-    await msg.answer(f'✅ Выдано {amount} запросов @{uname if uname!="ID "+str(uid) else uname}.')
+    uname_print = f'@{uname}' if uname and not uname.startswith('ID ') else uname
+    await admin_render(msg, f'✅ Выдано {amount} запросов {uname_print}.', admin_kb_home(msg.from_user.id))
     await state.clear()
 
-# === Массовый сброс триала (асинхронно) ===
+# === Массовый сброс триала (как было; отдельный прогресс-пост) ===
 async def _reset_all_job(chat_id: int, message_id: int | None):
     ids = [row[0] for row in c.execute("SELECT id FROM users").fetchall()]
     total = len(ids)
@@ -735,17 +815,21 @@ async def _reset_all_job(chat_id: int, message_id: int | None):
         changed = await asyncio.to_thread(_update_batch)
         affected += changed
         try:
-            await bot.edit_message_text(
-                chat_id=chat_id, message_id=message_id,
-                text=f"🔄 Массовый сброс… {min(i+1000, total)}/{total}"
-            )
+            if message_id:
+                await bot.edit_message_text(
+                    chat_id=chat_id, message_id=message_id,
+                    text=f"🔄 Массовый сброс… {min(i+1000, total)}/{total}"
+                )
         except:
             pass
     try:
-        await bot.edit_message_text(chat_id=chat_id, message_id=message_id,
-            text=f"✅ Триал завершён у всех. Обновлено записей: {affected}.")
+        if message_id:
+            await bot.edit_message_text(chat_id=chat_id, message_id=message_id,
+                text=f"✅ Триал завершён у всех. Обновлено записей: {affected}.")
+        else:
+            await bot.send_message(chat_id, f"✅ Триал завершён у всех. Обновлено записей: {affected}.")
     except:
-        await bot.send_message(chat_id, f"✅ Триал завершён у всех. Обновлено записей: {affected}.")
+        pass
 
 @dp.callback_query(F.data=='reset_all')
 async def reset_all(call: CallbackQuery, state: FSMContext):
@@ -768,7 +852,6 @@ async def search_handler(message: Message):
             c.execute('UPDATE users SET username=? WHERE id=?',
                       (message.from_user.username, uid))
 
-    # Гейт /start
     if need_start(uid):
         return await ask_press_start(message.chat.id)
 
@@ -1039,7 +1122,6 @@ async def buy_plan(callback: CallbackQuery):
     inv = data['result']
     inv_id = str(inv.get('invoice_id') or inv.get('id'))
     url = inv.get('bot_invoice_url') or inv.get('pay_url')
-    # Сохраняем pending-инвойс
     try:
         with conn:
             c.execute(
@@ -1067,17 +1149,15 @@ async def cryptopay_webhook(request: web.Request):
     except Exception:
         return web.json_response({'ok': True})
 
-    inv = js.get('invoice') or js  # некоторые прокси оборачивают иначе
+    inv = js.get('invoice') or js
     status = inv.get('status')
     payload = inv.get('payload')
 
     if status == 'paid' and payload:
-        # idempotency: если платеж с таким payload уже проведён — выходим
         row = c.execute("SELECT 1 FROM payments WHERE payload=?", (payload,)).fetchone()
         if row:
             return web.json_response({'ok': True})
 
-        # попытка распарсить план и uid
         try:
             parts = payload.split('_')
             if parts[0] != 'pay' or len(parts) < 4:
@@ -1106,7 +1186,6 @@ async def cryptopay_webhook(request: web.Request):
                     'INSERT OR REPLACE INTO payments(payload,user_id,plan,paid_at) VALUES(?,?,?,?)',
                     (payload, uid, plan, now_ts)
                 )
-                # помечаем invoice как paid, если есть в таблице
                 inv_id = str(inv.get('invoice_id') or inv.get('id') or '')
                 if inv_id:
                     c.execute('UPDATE invoices SET status=? WHERE invoice_id=?', ('paid', inv_id))
@@ -1143,11 +1222,9 @@ async def reconcile_cryptopay_recent(hours: int = 24):
             payload = itm.get('payload')
             if not payload:
                 continue
-            # уже проведён?
             row = c.execute("SELECT 1 FROM payments WHERE payload=?", (payload,)).fetchone()
             if row:
                 continue
-            # парсим uid/plan
             try:
                 parts = payload.split('_')
                 if parts[0] != 'pay' or len(parts) < 4:
