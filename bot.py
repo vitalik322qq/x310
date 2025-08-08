@@ -4,6 +4,9 @@ import time
 import tempfile
 import sqlite3
 import asyncio
+import re
+import html as html_lib
+from urllib.parse import urlparse
 from datetime import datetime
 
 import aiohttp
@@ -46,11 +49,15 @@ TRIAL_LIMIT    = 3
 FLOOD_WINDOW   = 15
 FLOOD_LIMIT    = 10
 FLOOD_INTERVAL = 3
-PAGE_SIZE      = 10  # на страницу в списках
+PAGE_SIZE      = 10  # пользователей на страницу в списках
 
-# === БД ===
+# === Подключение к БД ===
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+conn.execute("PRAGMA journal_mode=WAL;")
+conn.execute("PRAGMA synchronous=NORMAL;")
 c = conn.cursor()
+
+# Таблицы
 c.execute("""
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY,
@@ -61,8 +68,11 @@ CREATE TABLE IF NOT EXISTS users (
     hidden_data   INTEGER DEFAULT 0,
     username      TEXT DEFAULT '',
     requests_left INTEGER DEFAULT 0,
-    is_blocked    INTEGER DEFAULT 0
+    is_blocked    INTEGER DEFAULT 0,
+    boot_ack_ts   INTEGER DEFAULT 0
 )""")
+c.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+c.execute("CREATE INDEX IF NOT EXISTS idx_users_isblocked ON users(is_blocked)")
 c.execute("""
 CREATE TABLE IF NOT EXISTS payments (
     payload TEXT PRIMARY KEY,
@@ -74,6 +84,16 @@ c.execute("""
 CREATE TABLE IF NOT EXISTS blacklist (
     value TEXT PRIMARY KEY
 )""")
+c.execute("""
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+)""")
+conn.commit()
+
+# BOOT_TS — метка текущего запуска
+BOOT_TS = str(int(time.time()))
+c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('BOOT_TS', ?)", (BOOT_TS,))
 conn.commit()
 
 # === Админ-запрещённые запросы ===
@@ -84,16 +104,13 @@ ADMIN_HIDDEN = [
     'bodia.kohan322@gmail.com','vitalik322vitalik@gmail.com'
 ]
 
-# === Бот ===
+# === Бот / FSM ===
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
-# === FSM ===
 class AdminStates(StatesGroup):
     wait_grant_amount = State()
-    wait_username     = State()
-    wait_reset_id     = State()
 
 # === Утилиты ===
 def is_admin(uid: int) -> bool:
@@ -119,8 +136,158 @@ def check_flood(uid: int) -> bool:
     conn.commit()
     return len(recent) > FLOOD_LIMIT or (len(recent) >= 2 and recent[-1] - recent[-2] < FLOOD_INTERVAL)
 
-# === Пагинация пользователей для админки ===
-PAGE_SIZE = 10
+async def setup_menu_commands():
+    user_cmds = [
+        BotCommand(command="start",  description="Запуск"),
+        BotCommand(command="status", description="Статус подписки и лимитов"),
+        BotCommand(command="help",   description="Справка"),
+    ]
+    await bot.set_my_commands(user_cmds, scope=BotCommandScopeAllPrivateChats())
+    if OWNER_ID:
+        admin_cmds = user_cmds + [BotCommand(command="admin322", description="Панель администратора")]
+        try:
+            await bot.set_my_commands(admin_cmds, scope=BotCommandScopeChat(chat_id=OWNER_ID))
+        except Exception as e:
+            logging.warning(f"Не удалось выставить команды для OWNER_ID {OWNER_ID}: {e}")
+
+# ---------- НОРМАЛИЗАЦИЯ ТЕЛЕФОНОВ ----------
+_phone_clean_re = re.compile(r"[^\d]+")
+def normalize_phone(raw: str) -> str | None:
+    if not raw or not any(ch.isdigit() for ch in raw):
+        return None
+    digits = _phone_clean_re.sub("", raw)
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("0") and len(digits) == 10:
+        digits = "38" + digits
+    if digits.startswith("380") and 11 <= len(digits) <= 13:
+        return digits
+    if len(digits) == 12 and digits.startswith("380"):
+        return digits
+    return None
+
+def normalize_query_if_phone(q: str) -> tuple[str, str | None]:
+    norm = normalize_phone(q)
+    return (norm if norm else q, norm)
+
+# ---------- ССЫЛКИ: кнопки вместо длинных URL ----------
+def is_url(s: str) -> bool:
+    if not isinstance(s, str):
+        return False
+    s = s.strip()
+    return s.startswith("http://") or s.startswith("https://")
+
+def esc(s: str) -> str:
+    return html_lib.escape(str(s), quote=True)
+
+def label_for_url(src: str, url: str, key: str | None = None) -> str:
+    try:
+        netloc = urlparse(url).netloc.lower()
+    except Exception:
+        netloc = ""
+    s = (src or "").lower()
+    # ярлыки с эмодзи
+    if "olx" in s or "olx" in netloc:
+        return "🛒 Профиль OLX"
+    if "instagram" in s or "instagram.com" in netloc:
+        return "📸 Instagram"
+    if "t.me" in netloc or "telegram" in s:
+        return "✈️ Telegram"
+    if "facebook" in s or "facebook.com" in netloc or "fb.com" in netloc:
+        return "📘 Facebook"
+    if "linkedin" in s or "linkedin.com" in netloc:
+        return "💼 LinkedIn"
+    if "x.com" in netloc or "twitter.com" in netloc or "twitter" in s:
+        return "𝕏 Twitter"
+    if "youtube" in s or "youtu.be" in netloc:
+        return "▶️ YouTube"
+    if "tiktok" in s or "tiktok.com" in netloc:
+        return "🎵 TikTok"
+    if "github" in s or "github.com" in netloc:
+        return "🐙 GitHub"
+    if key:
+        k = key.lower()
+        if "profile" in k:
+            return "👤 Профиль"
+        if "url" in k or "link" in k:
+            return "🌐 Открыть ссылку"
+    return "🌐 Открыть ссылку"
+
+def render_value(src: str, key: str, v) -> str:
+    """Рендер значения. Ссылки -> кнопки, массивы -> сетка кнопок/текстов, словари -> моно."""
+    if isinstance(v, (list, tuple)):
+        parts = [render_value(src, key, item) for item in v if item not in (None, "", [], {})]
+        if not parts:
+            return ""
+        return '<div class="val-grid">' + "".join(f'<div class="val-item">{p}</div>' for p in parts) + '</div>'
+    if isinstance(v, dict):
+        inner = ", ".join(f"{esc(k)}: {esc(val)}" for k, val in v.items())
+        return f'<span class="mono">{inner}</span>'
+    if isinstance(v, str):
+        vs = v.strip()
+        if is_url(vs):
+            label = label_for_url(src, vs, key)
+            return f'<a class="btn neon" href="{esc(vs)}" target="_blank" rel="noopener">{esc(label)}</a>'
+        return f"<span>{esc(vs)}</span>"
+    return f"<span>{esc(v)}</span>"
+
+# ---------- ГРУППИРОВКА И СОРТИРОВКА ПОЛЕЙ ----------
+GROUP_ORDER = [
+    "Идентификация",
+    "Контакты",
+    "Документы",
+    "Адреса",
+    "Аккаунты / Профили",
+    "Активность",
+    "Прочее",
+]
+
+def group_for_key(k: str) -> str:
+    k_low = k.lower()
+    if any(s in k_low for s in ["full_name","first_name","last_name","middle_name","name","gender","birth","bday","date_of_birth"]):
+        return "Идентификация"
+    if any(s in k_low for s in [
+        "phone","tel","email","mail",
+        "telegram","tg","t.me","instagram","insta","facebook","fb","vk","linkedin","twitter","x_","youtube","tiktok",
+        "site","website","url","link"
+    ]):
+        return "Контакты"
+    if any(s in k_low for s in ["passport","inn","series","number","doc","document","id_card","tax"]):
+        return "Документы"
+    if any(s in k_low for s in ["address","region","city","street","addr","oblast","район","область","насел","улиц","index","postcode"]):
+        return "Адреса"
+    if any(s in k_low for s in ["username","login","profile","account","nick","user_id","uid"]):
+        return "Аккаунты / Профили"
+    if any(s in k_low for s in ["created","updated","last_login","registered","reg_date","timestamp","date","time"]):
+        return "Активность"
+    return "Прочее"
+
+# приоритет сортировки внутри группы
+SORT_PRIORITY = {
+    "Идентификация": ["full_name","last_name","first_name","middle_name","birth_date","gender","name"],
+    "Контакты": ["phone","email","telegram","instagram","facebook","vk","linkedin","twitter","x","youtube","tiktok","site","website","url","link"],
+    "Документы": ["passport_series","passport_number","passport_date","inn","tax","id_card","doc","document","series","number"],
+    "Адреса": ["country","region","oblast","city","street","house","apt","postcode","index","address"],
+    "Аккаунты / Профили": ["username","login","profile","account","user_id","uid","nick"],
+    "Активность": ["last_login","created","updated","registered","reg_date","timestamp","date","time"],
+    "Прочее": []
+}
+
+def sort_weight(group: str, key: str) -> tuple[int, str]:
+    base = SORT_PRIORITY.get(group, [])
+    k = key.lower()
+    # точное совпадение
+    for i, p in enumerate(base):
+        if k == p:
+            return (i, k)
+    # начинается с паттерна (например, instagram_username)
+    for i, p in enumerate(base):
+        if k.startswith(p):
+            return (i + 100, k)
+    # прочее — в конец
+    return (1000, k)
+
+# Пагинация пользователей
 def fetch_users_page(page: int):
     offset = page * PAGE_SIZE
     rows = c.execute(
@@ -154,24 +321,6 @@ def users_list_keyboard(action: str, page: int = 0) -> InlineKeyboardMarkup:
     kb_rows.append([InlineKeyboardButton(text="🏠 В админ-меню", callback_data="admin_home")])
     return InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
-# === Команды меню Telegram (синяя кнопка) ===
-async def setup_menu_commands():
-    # Команды для всех приватных чатов (обычные пользователи)
-    user_cmds = [
-        BotCommand(command="start",  description="Запуск"),
-        BotCommand(command="status", description="Статус подписки и лимитов"),
-        BotCommand(command="help",   description="Справка"),
-    ]
-    await bot.set_my_commands(user_cmds, scope=BotCommandScopeAllPrivateChats())
-
-    # Команды для админа (добавляем /admin322)
-    if OWNER_ID:
-        admin_cmds = user_cmds + [BotCommand(command="admin322", description="Панель администратора")]
-        try:
-            await bot.set_my_commands(admin_cmds, scope=BotCommandScopeChat(chat_id=OWNER_ID))
-        except Exception as e:
-            logging.warning(f"Не удалось выставить команды для OWNER_ID {OWNER_ID}: {e}")
-
 # === Хендлеры ===
 
 @dp.message(CommandStart())
@@ -182,7 +331,9 @@ async def start_handler(message: Message):
     if message.from_user.username:
         c.execute('UPDATE users SET username=? WHERE id=?',
                   (message.from_user.username, uid))
+    c.execute('UPDATE users SET boot_ack_ts=? WHERE id=?', (int(BOOT_TS), uid))
     conn.commit()
+
     hd, fu, te = c.execute(
         'SELECT hidden_data,free_used,trial_expired FROM users WHERE id=?', (uid,)
     ).fetchone()
@@ -228,7 +379,7 @@ async def buy_plan(callback: CallbackQuery):
     await callback.message.answer(f"💳 План «{plan}» – ${price}", reply_markup=kb)
     await callback.answer()
 
-# === Админ-меню ===
+# === Меню ===
 @dp.message(Command('admin322'))
 async def admin_menu(message: Message):
     if not is_admin(message.from_user.id):
@@ -253,8 +404,7 @@ async def admin_home(call: CallbackQuery):
     ])
     if call.message:
         await call.message.edit_text('<b>Панель администратора:</b>', reply_markup=kb)
-    else:
-        await call.answer()
+    await call.answer()
 
 # === Листинги пользователей ===
 @dp.callback_query(F.data == 'give_requests')
@@ -364,19 +514,64 @@ async def grant_amount_input(msg: Message, state: FSMContext):
     await msg.answer(f'✅ Выдано {amount} запросов @{uname if uname!="ID "+str(uid) else uname}.')
     await state.clear()
 
-# === Поиск и HTML ===
+# === Массовый сброс триала: асинхронно, чтобы не “висела” кнопка ===
+async def _reset_all_job(chat_id: int, message_id: int | None):
+    ids = [row[0] for row in c.execute("SELECT id FROM users").fetchall()]
+    total = len(ids)
+    affected = 0
+    for i in range(0, total, 1000):
+        batch = ids[i:i+1000]
+        def _update_batch():
+            cur = conn.cursor()
+            cur.execute("BEGIN")
+            cur.executemany("UPDATE users SET free_used=?, trial_expired=1 WHERE id=?",
+                            [(TRIAL_LIMIT, _id) for _id in batch])
+            cur.execute("COMMIT")
+            return cur.rowcount
+        changed = await asyncio.to_thread(_update_batch)
+        affected += changed
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=f"🔄 Массовый сброс… {min(i+1000, total)}/{total}"
+            )
+        except:
+            pass
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text=f"✅ Триал завершён у всех. Обновлено записей: {affected}."
+        )
+    except:
+        await bot.send_message(chat_id, f"✅ Триал завершён у всех. Обновлено записей: {affected}.")
+
+@dp.callback_query(F.data=='reset_all')
+async def reset_all(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return await call.answer()
+    await call.answer('Запустил массовый сброс…')
+    msg = await call.message.answer("🔄 Массовый сброс… 0%")
+    asyncio.create_task(_reset_all_job(chat_id=msg.chat.id, message_id=msg.message_id))
+    await state.clear()
+
+# === Поиск и HTML (с группировкой, сортировкой, сворачиванием) ===
 @dp.message(F.text & ~F.text.startswith('/'))
 async def search_handler(message: Message):
     uid = message.from_user.id
     c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)',
               (uid,0,0,0))
-    conn.commit()
-
-    q = message.text.strip()
     if message.from_user.username:
         c.execute('UPDATE users SET username=? WHERE id=?',
                   (message.from_user.username, uid))
-        conn.commit()
+    conn.commit()
+
+    boot_ack = c.execute("SELECT boot_ack_ts FROM users WHERE id=?", (uid,)).fetchone()[0]
+    if int(boot_ack or 0) < int(BOOT_TS):
+        return await message.answer("♻️ Бот был перезапущен. Нажмите /start, чтобы продолжить.")
+
+    original_q = message.text.strip()
+    q_for_api, norm_phone = normalize_query_if_phone(original_q)
 
     is_blocked, hidden_data, requests_left, free_used, subs_until, trial_expired = c.execute(
         'SELECT is_blocked,hidden_data,requests_left,free_used,subs_until,trial_expired '
@@ -389,7 +584,7 @@ async def search_handler(message: Message):
             return await message.answer('🚫 Вы заблокированы.')
         if hidden_data:
             return await message.answer('🚫 Ваши данные скрыты.')
-        if q in ADMIN_HIDDEN:
+        if original_q in ADMIN_HIDDEN or (norm_phone and norm_phone in ADMIN_HIDDEN):
             return await message.answer('🚫 Запрос запрещён.')
         if check_flood(uid):
             return await message.answer('⛔ Слишком часто. Попробуйте позже.')
@@ -413,16 +608,21 @@ async def search_handler(message: Message):
                     conn.commit()
                     return await message.answer('🔐 Триал окончен. Подпишитесь.', reply_markup=sub_keyboard())
 
-    if c.execute('SELECT 1 FROM blacklist WHERE value=?', (q,)).fetchone():
+    black_hit = c.execute('SELECT 1 FROM blacklist WHERE value=?', (original_q,)).fetchone()
+    if not black_hit and norm_phone:
+        black_hit = c.execute('SELECT 1 FROM blacklist WHERE value=?', (norm_phone,)).fetchone()
+    if black_hit:
         return await message.answer('🔒 Доступ запрещён.')
 
-    await message.answer(f"🕷️ Выполняется поиск для <code>{q}</code>…")
+    shown_q = norm_phone if norm_phone else original_q
+    await message.answer(f"🕷️ Выполняется поиск для <code>{shown_q}</code>…")
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 'https://api.usersbox.ru/v1/search',
                 headers={'Authorization': USERSBOX_API_KEY},
-                params={'q': q}, timeout=10
+                params={'q': q_for_api}, timeout=12
             ) as resp:
                 if resp.status != 200:
                     return await message.answer(f'⚠️ API ошибка: {resp.status}')
@@ -443,23 +643,51 @@ async def search_handler(message: Message):
         }
         return m.get(k, k)
 
-    blocks = []
+    all_blocks = []
     for itm in data['data']['items']:
         hits = itm.get('hits', {}).get('items', [])
         src  = itm.get('source', {}).get('database', '?')
         if not hits:
             continue
-        rows = "".join(
-            f"<tr><td>{beautify(k)}</td><td>{', '.join(str(x) for x in v) if isinstance(v, (list, tuple)) else v}</td></tr>"
-            for h in hits for k, v in h.items() if v
-        )
-        blocks.append(f"""
+
+        grouped = {g: [] for g in GROUP_ORDER}
+        for h in hits:
+            for k, v in h.items():
+                if v in (None, "", [], {}):
+                    continue
+                grp = group_for_key(k)
+                key_title = beautify(k)
+                val_html = render_value(src, k, v)
+                grouped[grp].append((key_title, val_html))
+
+        group_html = []
+        for grp in GROUP_ORDER:
+            items = grouped.get(grp) or []
+            if not items:
+                continue
+            # сортируем по приоритету
+            items.sort(key=lambda kv: sort_weight(grp, kv[0]))
+            rows = "".join(f"<tr><td>{esc(k)}</td><td>{val}</td></tr>" for k, val in items)
+            # сворачиваемые секции (первые 2 открыты)
+            open_attr = " open" if grp in GROUP_ORDER[:2] else ""
+            group_html.append(f"""
+<details class="group"{open_attr}>
+  <summary class="g-summary"><span class="caret"></span><span class="g-title">{esc(grp)}</span><span class="g-count">{len(items)}</span></summary>
+  <div class="g-body">
+    <table>
+      <thead><tr><th>Поле</th><th>Значение</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </div>
+</details>""")
+
+        if not group_html:
+            continue
+
+        all_blocks.append(f"""
 <div class="block">
-  <h2 class="graffiti">{src}</h2>
-  <table>
-    <thead><tr><th>Поле</th><th>Значение</th></tr></thead>
-    <tbody>{rows}</tbody>
-  </table>
+  <h2 class="graffiti">{esc(src)}</h2>
+  {''.join(group_html)}
 </div>""")
 
     html = f"""<!DOCTYPE html>
@@ -470,22 +698,100 @@ async def search_handler(message: Message):
   <title>n3l0x Intelligence Report</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Inconsolata&display=swap');
-    body {{ margin: 0; background: #0b0c10; color: #c5c6c7; font-family: 'Inconsolata', monospace; line-height: 1.4; }}
-    h1 {{ text-align: center; padding: 20px 0; margin: 0; color: #66fcf1; font-family: 'Orbitron', sans-serif; text-shadow: 0 0 8px rgba(102,252,241,0.8); background: #1f2833; }}
-    .report {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; padding: 16px; }}
-    .block {{ background: #1f2833; border: 1px solid #66fcf1; border-radius: 8px; box-shadow: 0 0 10px rgba(102,252,241,0.2); overflow: hidden; }}
-    .block .graffiti {{ margin: 0; padding: 12px; font-family: 'Orbitron', sans-serif; color: #66fcf1; text-shadow: 0 0 6px rgba(102,252,241,0.7); font-size: 1.1em; text-align: center; background: #0b0c10; border-bottom: 1px solid #66fcf1; }}
-    table {{ width: 100%; border-collapse: collapse; }}
-    th, td {{ padding: 8px; text-align: left; font-size: 0.9em; word-break: break-word; }}
-    th {{ background: #45a29e; color: #0b0c10; font-weight: 400; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid #0b0c10; }}
-    td {{ background: #0b0c10; color: #c5c6c7; border: 1px solid #1f2833; }}
-    tr:nth-child(even) td {{ background: #1f2833; }}
-    @media (max-width: 600px) {{ h1 {{ font-size: 1.4em; }} .graffiti {{ font-size: 1em; }} }}
+    :root {{
+      --bg: #0b0c10;
+      --panel: #1f2833;
+      --text: #c5c6c7;
+      --accent: #66fcf1;
+      --accent2: #45a29e;
+      --muted: #0f141a;
+      --muted2:#16202a;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin:0; background:var(--bg); color:var(--text); font-family:'Inconsolata', monospace; line-height:1.45; }}
+    h1 {{
+      text-align:center; padding:20px 0; margin:0;
+      color:var(--accent); font-family:'Orbitron', sans-serif;
+      text-shadow:0 0 8px rgba(102,252,241,.8);
+      background:var(--panel); border-bottom:1px solid var(--accent);
+    }}
+    .report {{
+      display:grid; grid-template-columns:repeat(auto-fit, minmax(320px,1fr));
+      gap:18px; padding:18px;
+    }}
+    .block {{
+      background:var(--panel); border:1px solid var(--accent);
+      border-radius:12px; box-shadow:0 0 10px rgba(102,252,241,.18); overflow:hidden;
+    }}
+    .block .graffiti {{
+      margin:0; padding:14px; font-family:'Orbitron', sans-serif;
+      color:var(--accent); text-shadow:0 0 6px rgba(102,252,241,.7);
+      font-size:1.05em; text-align:center; background:var(--bg);
+      border-bottom:1px solid var(--accent);
+    }}
+    /* Группы */
+    .group {{ border-top:1px dashed rgba(102,252,241,.25); }}
+    .g-summary {{
+      list-style:none; cursor:pointer; user-select:none;
+      display:flex; align-items:center; gap:10px;
+      padding:10px 12px; background:rgba(102,252,241,.05);
+      border-bottom:1px dashed rgba(102,252,241,.2);
+    }}
+    .g-summary::-webkit-details-marker {{ display:none; }}
+    .g-title {{
+      color:var(--accent2); font-weight:700; letter-spacing:.04em;
+      text-transform:uppercase; font-size:.9em;
+    }}
+    .g-count {{
+      margin-left:auto; color:var(--accent); font-family:'Orbitron', sans-serif;
+      font-size:.85em; padding:2px 8px; border:1px solid var(--accent);
+      border-radius:999px; background:rgba(102,252,241,.08);
+    }}
+    .caret {{
+      width:0; height:0; border-left:6px solid var(--accent);
+      border-top:5px solid transparent; border-bottom:5px solid transparent;
+      transform:rotate(0deg); transition:transform .15s ease;
+    }}
+    details[open] .caret {{ transform:rotate(90deg); }}
+    .g-body {{ padding:10px 12px 16px; }}
+
+    table {{ width:100%; border-collapse:collapse; }}
+    th, td {{ padding:8px; text-align:left; font-size:.92em; vertical-align:top; }}
+    thead th {{
+      background:var(--accent2); color:var(--bg);
+      font-weight:700; letter-spacing:.05em;
+      border:1px solid var(--bg);
+    }}
+    td {{
+      background:var(--muted); color:var(--text);
+      border:1px solid #1f2a33; overflow-wrap:anywhere; word-break:break-word;
+    }}
+    tr:nth-child(even) td {{ background:var(--muted2); }}
+
+    .mono {{ font-family:'Inconsolata', monospace; opacity:.95; }}
+
+    .val-grid {{ display:flex; flex-wrap:wrap; gap:6px; }}
+    .val-item {{ flex:0 0 auto; }}
+
+    .btn {{
+      display:inline-block; text-decoration:none; padding:7px 10px; border-radius:8px;
+      border:1px solid var(--accent); background:linear-gradient(90deg, rgba(102,252,241,.15), rgba(69,162,158,.15));
+      color:var(--accent); font-weight:600; box-shadow:0 0 8px rgba(102,252,241,.2) inset, 0 0 6px rgba(102,252,241,.15);
+      transition:transform .08s ease, box-shadow .12s ease, background .12s ease; white-space:nowrap;
+    }}
+    .btn:hover {{ transform:translateY(-1px); box-shadow:0 0 10px rgba(102,252,241,.35), 0 0 10px rgba(102,252,241,.35) inset; }}
+    .btn.neon {{ text-shadow:0 0 6px rgba(102,252,241,.6); }}
+
+    @media (max-width: 600px) {{
+      h1 {{ font-size: 1.3em; }}
+      .graffiti {{ font-size: 1em; }}
+      th, td {{ font-size: .9em; }}
+    }}
   </style>
 </head>
 <body>
   <h1>n3l0x Intelligence Report</h1>
-  <div class="report">{''.join(blocks)}</div>
+  <div class="report">{''.join(all_blocks)}</div>
 </body>
 </html>"""
 
@@ -493,17 +799,22 @@ async def search_handler(message: Message):
         tf.write(html)
         path = tf.name
 
-    await message.answer_document(FSInputFile(path, filename=f"{q}.html"))
-    os.unlink(path)
+    await message.answer_document(FSInputFile(path, filename=f"{shown_q}.html"))
+    try:
+        os.unlink(path)
+    except:
+        pass
 
 @dp.message(Command('status'))
 async def status_handler(message: Message):
     uid = message.from_user.id
-    subs, fu, hd, rl, te = c.execute(
-        'SELECT subs_until,free_used,hidden_data,requests_left,trial_expired FROM users WHERE id=?',
+    subs, fu, hd, rl, te, boot_ack = c.execute(
+        'SELECT subs_until,free_used,hidden_data,requests_left,trial_expired,boot_ack_ts FROM users WHERE id=?',
         (uid,)
     ).fetchone()
     now = int(time.time())
+    if int(boot_ack or 0) < int(BOOT_TS):
+        return await message.answer("♻️ Бот был перезапущен. Нажмите /start, чтобы продолжить.")
     if hd:
         return await message.answer('🔒 Ваши данные скрыты.')
     sub = datetime.fromtimestamp(subs).strftime('%Y-%m-%d') if subs > now else 'none'
@@ -513,13 +824,14 @@ async def status_handler(message: Message):
 @dp.message(Command('help'))
 async def help_handler(message: Message):
     await message.answer(
-        "/status – статус\n"
+        "/start  – запуск/обновление сессии\n"
+        "/status – статус и лимиты\n"
         "/help   – справка\n"
         "/admin322 – панель администратора (только у админа)\n"
         "Отправьте любой текст для поиска."
     )
 
-# === Webhook endpoints ===
+# === Вебхуки ===
 async def health(request):
     return web.Response(text='OK')
 
@@ -557,12 +869,10 @@ async def cryptopay_webhook(request: web.Request):
 
 # === Startup/Shutdown ===
 async def on_startup(app):
-    # webhook
     if WEBHOOK_URL:
         await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
-    # меню команд
     await setup_menu_commands()
-    logging.info("Меню команд установлено.")
+    logging.info("Меню команд установлено. BOOT_TS=%s", BOOT_TS)
 
 async def on_shutdown(app):
     try:
@@ -574,7 +884,6 @@ app = web.Application()
 app.router.add_get('/health', health)
 app.router.add_route('*','/webhook', SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=WEBHOOK_SECRET))
 app.router.add_post('/cryptopay', cryptopay_webhook)
-
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
