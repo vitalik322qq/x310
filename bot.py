@@ -36,7 +36,10 @@ OWNER_ID            = int(os.getenv('OWNER_ID', '0'))
 BASE_CURRENCY       = os.getenv('BASE_CURRENCY', 'USDT')
 WEBHOOK_URL         = os.getenv('WEBHOOK_URL')
 WEBHOOK_SECRET      = os.getenv('WEBHOOK_SECRET')
-DB_PATH             = os.getenv('DATABASE_PATH')  # путь к файлу БД (можно не задавать)
+DB_PATH = os.getenv('DATABASE_PATH')  # путь к файлу БД (можно не задавать)
+# Если volume смонтирован в /app/data — используем его по умолчанию
+if not DB_PATH:
+    DB_PATH = '/app/data/n3l0x.sqlite' if os.path.isdir('/app/data') else 'n3l0x.sqlite'  # путь к файлу БД (можно не задавать)
 PORT                = int(os.getenv('PORT', '8080'))
 
 # Если volume смонтирован в /data — используем его по умолчанию
