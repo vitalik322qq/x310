@@ -102,8 +102,8 @@ def sub_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='🔒 29 days – $49',      callback_data='buy_month')],
         [InlineKeyboardButton(text='🔒 89 days – $120',     callback_data='buy_quarter')],
-        [InlineKeyboardButton(text='🔒 Lifetime – $299',     callback_data='buy_lifetime')],
-        [InlineKeyboardButton(text='🧊 Hide my data – $100', callback_data='buy_hide_data')],
+        [InlineKeyboardButton(text='🔒 Lifetime – $299',    callback_data='buy_lifetime')],
+        [InlineKeyboardButton(text='🧊 Hide my data – $100',callback_data='buy_hide_data')],
     ])
 
 def check_flood(uid: int) -> bool:
@@ -113,7 +113,8 @@ def check_flood(uid: int) -> bool:
     now = int(time.time())
     times = [int(t) for t in last.split(',') if t] + [now]
     recent = [t for t in times if now - t <= FLOOD_WINDOW]
-    c.execute('UPDATE users SET last_queries=? WHERE id=?', (','.join(map(str, recent)), uid))
+    c.execute('UPDATE users SET last_queries=? WHERE id=?',
+              (','.join(map(str, recent)), uid))
     conn.commit()
     return len(recent) > FLOOD_LIMIT or (len(recent) >= 2 and recent[-1] - recent[-2] < FLOOD_INTERVAL)
 
@@ -128,10 +129,8 @@ async def start_handler(message: Message):
         c.execute('UPDATE users SET username=? WHERE id=?',
                   (message.from_user.username, uid))
     conn.commit()
-
     hd, fu, te = c.execute(
-        'SELECT hidden_data,free_used,trial_expired FROM users WHERE id=?',
-        (uid,)
+        'SELECT hidden_data,free_used,trial_expired FROM users WHERE id=?',(uid,)
     ).fetchone()
     if hd:
         welcome = '<b>Your data is hidden.</b>'
@@ -139,8 +138,7 @@ async def start_handler(message: Message):
         welcome = '<b>Your trial ended.</b>'
     else:
         rem = TRIAL_LIMIT - fu
-        welcome = f'<b>You have {rem} free searches left.</b>' if rem > 0 else '<b>Your trial ended.</b>'
-
+        welcome = f'<b>You have {rem} free searches left.</b>' if rem>0 else '<b>Your trial ended.</b>'
     await message.answer(f"👾 Welcome to n3l0x!\n{welcome}", reply_markup=sub_keyboard())
 
 @dp.callback_query(F.data.startswith('buy_'))
@@ -208,9 +206,10 @@ async def set_requests(msg: Message, state: FSMContext):
     data = await state.get_data()
     n = msg.text
     if not n.isdigit() or not (1 <= int(n) <= 10):
-        return await msg.answer('Enter 1–10')
+        return await msg.answer('Enter a number 1–10')
     c.execute(
-        'INSERT INTO users(id,requests_left) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET requests_left=excluded.requests_left',
+        'INSERT INTO users(id,requests_left) VALUES(?,?) '
+        'ON CONFLICT(id) DO UPDATE SET requests_left=excluded.requests_left',
         (data['uid'], int(n))
     )
     conn.commit()
@@ -220,13 +219,17 @@ async def set_requests(msg: Message, state: FSMContext):
 # — Block / Unblock —
 @dp.callback_query(F.data == 'block_user')
 async def block_user(call: CallbackQuery, state: FSMContext):
-    await call.answer(); await call.message.answer('👤 Enter @username to block:')
-    await state.update_data(mode='block'); await state.set_state(AdminStates.wait_username)
+    await call.answer()
+    await call.message.answer('👤 Enter @username to block:')
+    await state.update_data(mode='block')
+    await state.set_state(AdminStates.wait_username)
 
 @dp.callback_query(F.data == 'unblock_user')
 async def unblock_user(call: CallbackQuery, state: FSMContext):
-    await call.answer(); await call.message.answer('👤 Enter @username to unblock:')
-    await state.update_data(mode='unblock'); await state.set_state(AdminStates.wait_username)
+    await call.answer()
+    await call.message.answer('👤 Enter @username to unblock:')
+    await state.update_data(mode='unblock')
+    await state.set_state(AdminStates.wait_username)
 
 @dp.message(AdminStates.wait_username)
 async def change_block(msg: Message, state: FSMContext):
@@ -250,7 +253,7 @@ async def reset_menu(call: CallbackQuery):
 
 @dp.callback_query(F.data == 'reset_all')
 async def reset_all(call: CallbackQuery, state: FSMContext):
-    cursor = c.execute('UPDATE users SET free_used=0, trial_expired=0')
+    cursor = conn.execute('UPDATE users SET free_used=0, trial_expired=0')
     conn.commit()
     count = cursor.rowcount
     logging.info(f"reset_all: affected {count} users")
@@ -267,9 +270,11 @@ async def reset_by_id(call: CallbackQuery, state: FSMContext):
 @dp.message(AdminStates.wait_reset_id)
 async def do_reset_by_id(msg: Message, state: FSMContext):
     if not msg.text.isdigit():
-        return await msg.answer('ID must be numeric')
+        return await msg.answer('🚫 ID must be numeric')
     uid = int(msg.text)
-    cursor = c.execute('UPDATE users SET free_used=0, trial_expired=0 WHERE id=?', (uid,))
+    cursor = conn.execute(
+        'UPDATE users SET free_used=0, trial_expired=0 WHERE id=?', (uid,)
+    )
     conn.commit()
     count = cursor.rowcount
     logging.info(f"reset_by_id: user {uid}, affected {count} rows")
@@ -279,7 +284,7 @@ async def do_reset_by_id(msg: Message, state: FSMContext):
         await msg.answer(f"⚠️ No user found with ID {uid}.")
     await state.clear()
 
-# — Search Handler & HTML report —
+# — Search Handler & HTML report with neon graffiti style —
 @dp.message(F.text & ~F.text.startswith('/'))
 async def search_handler(message: Message):
     uid = message.from_user.id
@@ -299,6 +304,7 @@ async def search_handler(message: Message):
     ).fetchone()
     now = int(time.time())
 
+    # access control
     if not is_admin(uid):
         if is_blocked:
             return await message.answer('🚫 You are blocked.')
@@ -309,7 +315,7 @@ async def search_handler(message: Message):
         if q in ADMIN_HIDDEN:
             return await message.answer('🚫 This query is prohibited.')
         if check_flood(uid):
-            return await message.answer('⛔ Flood detected. Try later.')
+            return await message.answer('⛔ Flood detected. Try again later.')
 
         if requests_left > 0:
             c.execute('UPDATE users SET requests_left=requests_left-1 WHERE id=?', (uid,))
@@ -330,15 +336,15 @@ async def search_handler(message: Message):
 
     await message.answer(f"🕷️ Recon on <code>{q}</code>…")
     try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(
-                "https://api.usersbox.ru/v1/search",
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                'https://api.usersbox.ru/v1/search',
                 headers={'Authorization': USERSBOX_API_KEY},
                 params={'q': q}, timeout=10
-            ) as r:
-                if r.status != 200:
-                    return await message.answer(f'⚠️ API error: {r.status}')
-                data = await r.json()
+            ) as resp:
+                if resp.status != 200:
+                    return await message.answer(f'⚠️ API error: {resp.status}')
+                data = await resp.json()
     except (ClientError, asyncio.TimeoutError):
         return await message.answer('⚠️ Network error.')
 
@@ -351,14 +357,14 @@ async def search_handler(message: Message):
             'email':'Email','first_name':'Имя','last_name':'Фамилия',
             'middle_name':'Отчество','birth_date':'Дата рождения',
             'gender':'Пол','passport_series':'Серия паспорта',
-            'passport_number':'Номер паспорта','passport_date':'Дата выдачи'
+            'passport_number':'Номер паспорта','passport_date':'Дата выдачи паспорта'
         }
         return m.get(k, k)
 
     blocks = []
     for itm in data['data']['items']:
         hits = itm.get('hits', {}).get('items', [])
-        src  = itm.get('source', {}).get('database', '?').upper()
+        src  = itm.get('source', {}).get('database', '?')
         if not hits: continue
         rows = "".join(
             f"<tr><td>{beautify(k)}</td><td>{', '.join(v) if isinstance(v, (list,tuple)) else v}</td></tr>"
@@ -366,7 +372,7 @@ async def search_handler(message: Message):
         )
         blocks.append(f"""
 <div class="block">
-  <h2>{src}</h2>
+  <h2 class="graffiti">{src}</h2>
   <table>
     <thead><tr><th>Field</th><th>Value</th></tr></thead>
     <tbody>{rows}</tbody>
@@ -378,15 +384,16 @@ async def search_handler(message: Message):
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>n3l0x Intelligence</title>
 <style>
-body {{ margin:0; background:#000; color:#E0E0E0; font-family:Courier,monospace }}
-h1 {{ text-align:center; padding:12px; color:#39FF14 }}
-.report {{ display:flex; flex-wrap:wrap; justify-content:center; gap:16px; padding:16px }}
-.block {{ background:#111; border:2px solid #39FF14; border-radius:8px; width:320px; overflow:auto }}
-.block h2 {{ margin:8px 0; color:#FF1493; text-align:center; font-weight:bold }}
-table {{ width:100%; border-collapse:collapse }}
-th {{ background:#FF1493; color:#000; padding:6px }}
-td {{ background:#222; color:#E0E0E0; padding:6px }}
-tr:nth-child(even) td {{ background:#1A1A1A }}
+@import url('https://fonts.googleapis.com/css2?family=Permanent+Marker&display=swap');
+body {{ margin:0; background:#000; color:#E0E0E0; font-family:Courier,monospace; }}
+h1 {{ text-align:center; padding:16px; color:#39FF14; text-shadow:0 0 6px #39FF14; }}
+.report {{ display:flex; flex-wrap:wrap; justify-content:center; gap:16px; padding:16px; }}
+.block {{ background:#111; border:2px solid #39FF14; border-radius:8px; width:320px; overflow:auto; }}
+.block .graffiti {{ margin:12px 0; font-family:'Permanent Marker',monospace; color:#FF33CC; text-shadow:0 0 8px #FF33CC; text-align:center; font-size:1.2em; }}
+table {{ width:100%; border-collapse:collapse; margin-bottom:16px; }}
+th {{ background:#39FF14; color:#000; padding:8px; }}
+td {{ background:#222; color:#E0E0E0; padding:8px; }}
+tr:nth-child(even) td {{ background:#1A1A1A; }}
 @media(max-width:600px) {{ .block {{ width:90%; }} }}
 </style>
 </head><body>
@@ -461,11 +468,13 @@ async def cryptopay_webhook(request: web.Request):
 
 app = web.Application()
 app.router.add_get('/health', health)
-app.router.add_route('*', '/webhook', SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=WEBHOOK_SECRET))
+app.router.add_route('*', '/webhook',
+                     SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=WEBHOOK_SECRET))
 app.router.add_post('/cryptopay', cryptopay_webhook)
 
-app.on_startup.append(lambda a: asyncio.create_task(bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)) if WEBHOOK_URL else None)
-app.on_shutdown.append(lambda a: asyncio.create_task(bot.delete_webhook()) or conn.close())
+app.on_startup.append(lambda _: asyncio.create_task(
+    bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)) if WEBHOOK_URL else None)
+app.on_shutdown.append(lambda _: asyncio.create_task(bot.delete_webhook()) or conn.close())
 
 if __name__ == '__main__':
     web.run_app(app, host='0.0.0.0', port=PORT)
