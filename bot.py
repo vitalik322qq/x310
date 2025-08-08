@@ -441,13 +441,17 @@ async def help_handler(message: Message):
 
     # Формируем список команд
     help_text = (
-        "/start  – запуск/обновление сессии\n"
-        "/status – статус и лимиты\n"
-        "/help   – справка\n"
+        "/start  – запуск/обновление сессии
+"
+        "/status – статус и лимиты
+"
+        "/help   – справка
+"
     )
     # Добавляем админ-команду только для админа
     if is_admin(uid):
-        help_text += "/admin322 – панель администратора\n"
+        help_text += "/admin322 – панель администратора
+"
     help_text += "Отправьте любой текст для поиска."
 
     await message.answer(help_text)
@@ -459,16 +463,19 @@ async def admin_menu(message: Message):
         return
     if need_start(message.from_user.id):
         return await ask_press_start(message.chat.id)
+    # Главное меню админа с кнопкой просмотра всех пользователей
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='📊 Выдать запросы',    callback_data='give_requests')],
         [InlineKeyboardButton(text='🎟 Дать подписку',     callback_data='grant_sub')],
-        [InlineKeyboardButton(text='🧊 Скрыть произвольные данные', callback_data='add_blacklist')],
-        [InlineKeyboardButton(text='🗑 Снять скрытие (удалить из ЧС)', callback_data='remove_blacklist')],
+        [InlineKeyboardButton(text='🧊 Скрыть данные',     callback_data='add_blacklist')],
+        [InlineKeyboardButton(text='🗑 Убрать из ЧС',      callback_data='remove_blacklist')],
         [InlineKeyboardButton(text='🚫 Заблокировать',     callback_data='block_user')],
         [InlineKeyboardButton(text='✅ Разблокировать',    callback_data='unblock_user')],
         [InlineKeyboardButton(text='🔄 Завершить триал',   callback_data='reset_menu')],
+        [InlineKeyboardButton(text='👥 Все пользователи',  callback_data='view_users')],
     ])
     await message.answer('<b>Панель администратора:</b>', reply_markup=kb)
+
 
 @dp.callback_query(F.data == 'admin_home')
 async def admin_home(call: CallbackQuery):
@@ -477,16 +484,20 @@ async def admin_home(call: CallbackQuery):
     if need_start(call.from_user.id):
         await ask_press_start(call.message.chat.id)
         return await call.answer()
+    # Обновляем главное меню админа, перерисовываем
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='📊 Выдать запросы',    callback_data='give_requests')],
         [InlineKeyboardButton(text='🎟 Дать подписку',     callback_data='grant_sub')],
-        [InlineKeyboardButton(text='🧊 Скрыть произвольные данные', callback_data='add_blacklist')],
-        [InlineKeyboardButton(text='🗑 Снять скрытие (удалить из ЧС)', callback_data='remove_blacklist')],
+        [InlineKeyboardButton(text='🧊 Скрыть данные',     callback_data='add_blacklist')],
+        [InlineKeyboardButton(text='🗑 Убрать из ЧС',      callback_data='remove_blacklist')],
         [InlineKeyboardButton(text='🚫 Заблокировать',     callback_data='block_user')],
         [InlineKeyboardButton(text='✅ Разблокировать',    callback_data='unblock_user')],
         [InlineKeyboardButton(text='🔄 Завершить триал',   callback_data='reset_menu')],
+        [InlineKeyboardButton(text='👥 Все пользователи',  callback_data='view_users')],
     ])
     await call.message.edit_text('<b>Панель администратора:</b>', reply_markup=kb)
+    await call.answer()
+
     await call.answer()
 
 # --- ДАТЬ ПОДПИСКУ: выбор плана -> список пользователей ---
@@ -1055,6 +1066,30 @@ async def buy_plan(callback: CallbackQuery):
     ])
     await callback.message.answer(f"💳 План «{plan}» – ${price}", reply_markup=kb)
     await callback.answer()
+
+# === Хендлер просмотра всех пользователей ===
+@dp.callback_query(F.data == 'view_users')
+async def view_users(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id)
+        return await call.answer()
+    rows = c.execute("SELECT id, COALESCE(NULLIF(username,''),'') as uname, last_queries FROM users").fetchall()
+    now_ts = int(time.time())
+    lines = []
+    for uid, uname, last_q in rows:
+        name = f"@{uname}" if uname else f"ID {uid}"
+        times = [int(t) for t in last_q.split(',') if t]
+        last_ts = times[-1] if times else 0
+        status = "🟢 онлайн" if now_ts - last_ts <= 300 else "⚫ офлайн"
+        lines.append(f"{name} — {status}")
+    text = "👥 Список пользователей:\n" + ("\n".join(lines) if lines else "Пользователей нет.")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='🏠 В админ-меню', callback_data='admin_home')],
+    ])
+    await call.message.edit_text(text, reply_markup=kb)
+    await call.answer()
 
 # === Вебхуки ===
 async def health(request):
