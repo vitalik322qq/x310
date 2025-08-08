@@ -16,7 +16,8 @@ from aiogram.enums import ParseMode
 from aiogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton,
     CallbackQuery, FSInputFile, BotCommand,
-    BotCommandScopeAllPrivateChats, BotCommandScopeChat
+    BotCommandScopeAllPrivateChats, BotCommandScopeChat,
+    ReplyKeyboardMarkup, KeyboardButton
 )
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -40,16 +41,17 @@ PORT                = int(os.getenv('PORT', '8080'))
 
 # === Константы ===
 TARIFFS = {
-    'month':     {'price': 49,  'days': 29},
-    'quarter':   {'price': 120, 'days': 89},
-    'lifetime':  {'price': 299, 'days': 9999},
-    'hide_data': {'price': 100, 'days': 0},
+    'month':     {'price': 49,  'days': 29,   'title': '29 дней – $49'},
+    'quarter':   {'price': 120, 'days': 89,   'title': '89 дней – $120'},
+    'lifetime':  {'price': 299, 'days': 9999, 'title': 'Пожизненно – $299'},
+    'hide_data': {'price': 100, 'days': 0,    'title': 'Скрыть данные – $100'},
 }
 TRIAL_LIMIT    = 3
 FLOOD_WINDOW   = 15
 FLOOD_LIMIT    = 10
 FLOOD_INTERVAL = 3
-PAGE_SIZE      = 10  # пользователей на страницу в списках
+PAGE_SIZE      = 10   # пользователей на страницу в списках
+AUTO_COLLAPSE_THRESHOLD = 20  # >N строк — сворачиваем группу по умолчанию
 
 # === Подключение к БД ===
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -110,7 +112,9 @@ dp = Dispatcher(storage=storage)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
 class AdminStates(StatesGroup):
-    wait_grant_amount = State()
+    wait_grant_amount        = State()
+    wait_blacklist_values    = State()
+    wait_unblacklist_values  = State()
 
 # === Утилиты ===
 def is_admin(uid: int) -> bool:
@@ -118,11 +122,30 @@ def is_admin(uid: int) -> bool:
 
 def sub_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='🔒 29 дней – $49',        callback_data='buy_month')],
-        [InlineKeyboardButton(text='🔒 89 дней – $120',       callback_data='buy_quarter')],
-        [InlineKeyboardButton(text='🔒 Пожизненно – $299',     callback_data='buy_lifetime')],
-        [InlineKeyboardButton(text='🧊 Скрыть данные – $100',  callback_data='buy_hide_data')],
+        [InlineKeyboardButton(text='🔒 ' + TARIFFS['month']['title'],     callback_data='buy_month')],
+        [InlineKeyboardButton(text='🔒 ' + TARIFFS['quarter']['title'],   callback_data='buy_quarter')],
+        [InlineKeyboardButton(text='🔒 ' + TARIFFS['lifetime']['title'],  callback_data='buy_lifetime')],
+        [InlineKeyboardButton(text='🧊 ' + TARIFFS['hide_data']['title'], callback_data='buy_hide_data')],
     ])
+
+def start_keyboard() -> ReplyKeyboardMarkup:
+    # Большая кнопка /start
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="/start")]],
+        resize_keyboard=True, one_time_keyboard=True, input_field_placeholder="Нажмите /start, чтобы активировать сессию"
+    )
+
+def need_start(uid: int) -> bool:
+    row = c.execute("SELECT boot_ack_ts FROM users WHERE id=?", (uid,)).fetchone()
+    ack = int(row[0]) if row and row[0] else 0
+    return ack < int(BOOT_TS)
+
+async def ask_press_start(chat_id: int):
+    await bot.send_message(
+        chat_id,
+        "♻️ Бот был перезапущен или вы ещё не активировали сессию.\nПожалуйста, нажмите /start.",
+        reply_markup=start_keyboard()
+    )
 
 def check_flood(uid: int) -> bool:
     c.execute('SELECT last_queries FROM users WHERE id=?', (uid,))
@@ -170,7 +193,7 @@ def normalize_query_if_phone(q: str) -> tuple[str, str | None]:
     norm = normalize_phone(q)
     return (norm if norm else q, norm)
 
-# ---------- ССЫЛКИ: кнопки вместо длинных URL ----------
+# ---------- ССЫЛКИ / HTML ----------
 def is_url(s: str) -> bool:
     if not isinstance(s, str):
         return False
@@ -186,7 +209,6 @@ def label_for_url(src: str, url: str, key: str | None = None) -> str:
     except Exception:
         netloc = ""
     s = (src or "").lower()
-    # ярлыки с эмодзи
     if "olx" in s or "olx" in netloc:
         return "🛒 Профиль OLX"
     if "instagram" in s or "instagram.com" in netloc:
@@ -214,7 +236,6 @@ def label_for_url(src: str, url: str, key: str | None = None) -> str:
     return "🌐 Открыть ссылку"
 
 def render_value(src: str, key: str, v) -> str:
-    """Рендер значения. Ссылки -> кнопки, массивы -> сетка кнопок/текстов, словари -> моно."""
     if isinstance(v, (list, tuple)):
         parts = [render_value(src, key, item) for item in v if item not in (None, "", [], {})]
         if not parts:
@@ -231,7 +252,7 @@ def render_value(src: str, key: str, v) -> str:
         return f"<span>{esc(vs)}</span>"
     return f"<span>{esc(v)}</span>"
 
-# ---------- ГРУППИРОВКА И СОРТИРОВКА ПОЛЕЙ ----------
+# ---------- ГРУППИРОВКА / СОРТИРОВКА ----------
 GROUP_ORDER = [
     "Идентификация",
     "Контакты",
@@ -262,7 +283,6 @@ def group_for_key(k: str) -> str:
         return "Активность"
     return "Прочее"
 
-# приоритет сортировки внутри группы
 SORT_PRIORITY = {
     "Идентификация": ["full_name","last_name","first_name","middle_name","birth_date","gender","name"],
     "Контакты": ["phone","email","telegram","instagram","facebook","vk","linkedin","twitter","x","youtube","tiktok","site","website","url","link"],
@@ -276,18 +296,15 @@ SORT_PRIORITY = {
 def sort_weight(group: str, key: str) -> tuple[int, str]:
     base = SORT_PRIORITY.get(group, [])
     k = key.lower()
-    # точное совпадение
     for i, p in enumerate(base):
         if k == p:
             return (i, k)
-    # начинается с паттерна (например, instagram_username)
     for i, p in enumerate(base):
         if k.startswith(p):
             return (i + 100, k)
-    # прочее — в конец
     return (1000, k)
 
-# Пагинация пользователей
+# ---------- Пагинация пользователей ----------
 def fetch_users_page(page: int):
     offset = page * PAGE_SIZE
     rows = c.execute(
@@ -346,46 +363,53 @@ async def start_handler(message: Message):
         welcome = f'<b>Осталось {rem} бесплатных запросов.</b>' if rem > 0 else '<b>Триал окончен.</b>'
     await message.answer(f"👾 Добро пожаловать в n3l0x!\n{welcome}", reply_markup=sub_keyboard())
 
-@dp.callback_query(F.data.startswith('buy_'))
-async def buy_plan(callback: CallbackQuery):
-    plan = callback.data.split('_',1)[1]
-    if plan not in TARIFFS:
-        return await callback.answer('Неизвестный план', show_alert=True)
-    price = TARIFFS[plan]['price']
-    payload = f"pay_{callback.from_user.id}_{plan}_{int(time.time())}"
-    body = {
-        'asset': BASE_CURRENCY, 'amount': str(price),
-        'description': f"n3l0x: {plan}",
-        'payload': payload,
-        'allow_comments': False, 'allow_anonymous': True,
-        'expires_in': 1800
-    }
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(
-                'https://pay.crypt.bot/api/createInvoice',
-                headers={'Crypto-Pay-API-Token': CRYPTOPAY_API_TOKEN},
-                json=body, timeout=10
-            ) as r:
-                data = await r.json()
-    except:
-        return await callback.message.answer('⚠️ Ошибка платежного сервиса.')
-    if not data.get('ok'):
-        return await callback.message.answer(f"⚠️ Ошибка: {data}")
-    url = data['result'].get('bot_invoice_url') or data['result'].get('pay_url')
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='💳 Оплатить', url=url)]
-    ])
-    await callback.message.answer(f"💳 План «{plan}» – ${price}", reply_markup=kb)
-    await callback.answer()
+# --- ГЛОБАЛЬНЫЙ ГЕЙТ ДЛЯ КОМАНД (кроме /start) ---
+@dp.message(Command('status'))
+async def status_handler(message: Message):
+    uid = message.from_user.id
+    c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
+    conn.commit()
+    if need_start(uid):
+        return await ask_press_start(message.chat.id)
 
-# === Меню ===
+    subs, fu, hd, rl, te, _ = c.execute(
+        'SELECT subs_until,free_used,hidden_data,requests_left,trial_expired,boot_ack_ts FROM users WHERE id=?',
+        (uid,)
+    ).fetchone()
+    now = int(time.time())
+    if hd:
+        return await message.answer('🔒 Ваши данные скрыты.')
+    sub = datetime.fromtimestamp(subs).strftime('%Y-%m-%d') if subs > now else 'none'
+    free = 0 if te else TRIAL_LIMIT - fu
+    await message.answer(f"📊 Подписка: {sub}\nБесплатно осталось: {free}\nРучных осталось: {rl}")
+
+@dp.message(Command('help'))
+async def help_handler(message: Message):
+    uid = message.from_user.id
+    c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
+    conn.commit()
+    if need_start(uid):
+        return await ask_press_start(message.chat.id)
+    await message.answer(
+        "/start  – запуск/обновление сессии\n"
+        "/status – статус и лимиты\n"
+        "/help   – справка\n"
+        "/admin322 – панель администратора (только у админа)\n"
+        "Отправьте любой текст для поиска."
+    )
+
+# --- Админ-меню (с гейтом /start) ---
 @dp.message(Command('admin322'))
 async def admin_menu(message: Message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         return
+    if need_start(message.from_user.id):
+        return await ask_press_start(message.chat.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='📊 Выдать запросы',    callback_data='give_requests')],
+        [InlineKeyboardButton(text='🎟 Дать подписку',     callback_data='grant_sub')],
+        [InlineKeyboardButton(text='🧊 Скрыть произвольные данные', callback_data='add_blacklist')],
+        [InlineKeyboardButton(text='🗑 Снять скрытие (удалить из ЧС)', callback_data='remove_blacklist')],
         [InlineKeyboardButton(text='🚫 Заблокировать',     callback_data='block_user')],
         [InlineKeyboardButton(text='✅ Разблокировать',    callback_data='unblock_user')],
         [InlineKeyboardButton(text='🔄 Завершить триал',   callback_data='reset_menu')],
@@ -396,65 +420,170 @@ async def admin_menu(message: Message):
 async def admin_home(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id)
+        return await call.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='📊 Выдать запросы',    callback_data='give_requests')],
+        [InlineKeyboardButton(text='🎟 Дать подписку',     callback_data='grant_sub')],
+        [InlineKeyboardButton(text='🧊 Скрыть произвольные данные', callback_data='add_blacklist')],
+        [InlineKeyboardButton(text='🗑 Снять скрытие (удалить из ЧС)', callback_data='remove_blacklist')],
         [InlineKeyboardButton(text='🚫 Заблокировать',     callback_data='block_user')],
         [InlineKeyboardButton(text='✅ Разблокировать',    callback_data='unblock_user')],
         [InlineKeyboardButton(text='🔄 Завершить триал',   callback_data='reset_menu')],
     ])
-    if call.message:
-        await call.message.edit_text('<b>Панель администратора:</b>', reply_markup=kb)
+    await call.message.edit_text('<b>Панель администратора:</b>', reply_markup=kb)
     await call.answer()
 
-# === Листинги пользователей ===
+# --- ДАТЬ ПОДПИСКУ: выбор плана -> список пользователей ---
+@dp.callback_query(F.data == 'grant_sub')
+async def grant_sub_menu(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='🟢 ' + TARIFFS['month']['title'],    callback_data='sub_plan:month')],
+        [InlineKeyboardButton(text='🟣 ' + TARIFFS['quarter']['title'],  callback_data='sub_plan:quarter')],
+        [InlineKeyboardButton(text='💎 ' + TARIFFS['lifetime']['title'], callback_data='sub_plan:lifetime')],
+        [InlineKeyboardButton(text='🏠 В админ-меню', callback_data='admin_home')],
+    ])
+    await call.message.answer('Выберите план подписки:', reply_markup=kb)
+    await call.answer()
+
+@dp.callback_query(F.data.startswith('sub_plan:'))
+async def sub_plan_pick_users(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
+    plan = call.data.split(':',1)[1]
+    if plan not in ('month','quarter','lifetime'):
+        return await call.answer('Неверный план', show_alert=True)
+    kb = users_list_keyboard(action=f'sub_{plan}', page=0)
+    await call.message.answer(f'👥 Выберите пользователя для начисления подписки ({plan})', reply_markup=kb)
+    await call.answer()
+
+# --- Cкрыть/раскрыть произвольные данные (blacklist) ---
+@dp.callback_query(F.data == 'add_blacklist')
+async def add_blacklist_start(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
+    await call.message.answer("Вставьте значения через запятую, которые нужно скрыть (ФИО, телефоны, e-mail, даты и т.д.).\nПример:\n<code>Иванов Иван, 380661112233, 10.07.1999, test@example.com</code>")
+    await state.set_state(AdminStates.wait_blacklist_values)
+    await call.answer()
+
+@dp.message(AdminStates.wait_blacklist_values)
+async def add_blacklist_values(msg: Message, state: FSMContext):
+    if msg.from_user.id != OWNER_ID:
+        await state.clear(); return
+    if need_start(msg.from_user.id):
+        await state.clear()
+        return await ask_press_start(msg.chat.id)
+    raw = (msg.text or "").strip()
+    if not raw:
+        await state.clear()
+        return await msg.answer("Пустой ввод. Отменено.")
+    values = [v.strip() for v in raw.split(',')]
+    values = [v for v in values if v]
+    added = 0
+    for v in values:
+        try:
+            c.execute("INSERT OR IGNORE INTO blacklist(value) VALUES(?)", (v,))
+            added += c.rowcount
+        except:
+            pass
+    conn.commit()
+    await msg.answer(f"✅ В чёрный список добавлено: {added} из {len(values)}.\nЭти значения будут блокироваться при поиске.")
+    await state.clear()
+
+@dp.callback_query(F.data == 'remove_blacklist')
+async def remove_blacklist_start(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
+    await call.message.answer("Вставьте значения через запятую, которые нужно удалить из чёрного списка.\nПример:\n<code>Иванов Иван, 380661112233, 10.07.1999</code>")
+    await state.set_state(AdminStates.wait_unblacklist_values)
+    await call.answer()
+
+@dp.message(AdminStates.wait_unblacklist_values)
+async def remove_blacklist_values(msg: Message, state: FSMContext):
+    if msg.from_user.id != OWNER_ID:
+        await state.clear(); return
+    if need_start(msg.from_user.id):
+        await state.clear()
+        return await ask_press_start(msg.chat.id)
+    raw = (msg.text or "").strip()
+    if not raw:
+        await state.clear()
+        return await msg.answer("Пустой ввод. Отменено.")
+    values = [v.strip() for v in raw.split(',')]
+    values = [v for v in values if v]
+    removed = 0
+    for v in values:
+        try:
+            c.execute("DELETE FROM blacklist WHERE value=?", (v,))
+            removed += c.rowcount
+        except:
+            pass
+    conn.commit()
+    await msg.answer(f"✅ Из чёрного списка удалено: {removed} из {len(values)}.")
+    await state.clear()
+
+# === Листинги пользователей (прочие экраны) ===
 @dp.callback_query(F.data == 'give_requests')
 async def give_requests_list(call: CallbackQuery, state: FSMContext):
-    if not is_admin(call.from_user.id):
-        return await call.answer()
-    await call.answer()
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
     kb = users_list_keyboard(action='give', page=0)
     await call.message.answer('👥 Выберите пользователя для выдачи запросов:', reply_markup=kb)
+    await call.answer()
 
 @dp.callback_query(F.data == 'block_user')
 async def block_user_list(call: CallbackQuery, state: FSMContext):
-    if not is_admin(call.from_user.id):
-        return await call.answer()
-    await call.answer()
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
     kb = users_list_keyboard(action='block', page=0)
     await call.message.answer('👥 Кого заблокировать?', reply_markup=kb)
+    await call.answer()
 
 @dp.callback_query(F.data == 'unblock_user')
 async def unblock_user_list(call: CallbackQuery, state: FSMContext):
-    if not is_admin(call.from_user.id):
-        return await call.answer()
-    await call.answer()
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
     kb = users_list_keyboard(action='unblock', page=0)
     await call.message.answer('👥 Кого разблокировать?', reply_markup=kb)
+    await call.answer()
 
 @dp.callback_query(F.data == 'reset_menu')
 async def reset_menu(call: CallbackQuery):
-    if not is_admin(call.from_user.id):
-        return await call.answer()
-    await call.answer()
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='🔁 Завершить триал у всех', callback_data='reset_all')],
         [InlineKeyboardButton(text='🔍 Завершить триал у конкретного', callback_data='reset_pick')],
         [InlineKeyboardButton(text='🏠 В админ-меню', callback_data='admin_home')],
     ])
     await call.message.answer('Выберите режим завершения триала:', reply_markup=kb)
+    await call.answer()
 
 @dp.callback_query(F.data == 'reset_pick')
 async def reset_pick_list(call: CallbackQuery):
-    if not is_admin(call.from_user.id):
-        return await call.answer()
-    await call.answer()
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
     kb = users_list_keyboard(action='reset', page=0)
     await call.message.answer('👥 Выберите пользователя для завершения триала:', reply_markup=kb)
+    await call.answer()
 
 @dp.callback_query(F.data.startswith('list:'))
 async def paginate_users(call: CallbackQuery):
-    if not is_admin(call.from_user.id):
-        return await call.answer()
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
     _, action, page_s = call.data.split(':', 2)
     page = int(page_s)
     kb = users_list_keyboard(action=action, page=page)
@@ -466,8 +595,9 @@ async def paginate_users(call: CallbackQuery):
 
 @dp.callback_query(F.data.startswith('select:'))
 async def user_selected(call: CallbackQuery, state: FSMContext):
-    if not is_admin(call.from_user.id):
-        return await call.answer()
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
     _, action, uid_s, page_s = call.data.split(':', 3)
     uid = int(uid_s)
     row = c.execute('SELECT username FROM users WHERE id=?', (uid,)).fetchone()
@@ -475,27 +605,46 @@ async def user_selected(call: CallbackQuery, state: FSMContext):
 
     if action == 'give':
         await state.update_data(grant_uid=uid)
-        await call.message.answer(f'Выбран @{uname if uname!="ID "+str(uid) else uname}.\n'
-                                  '🔢 Введите количество запросов (1–100):')
+        await call.message.answer(f'Выбран @{uname if uname!="ID "+str(uid) else uname}.\n🔢 Введите количество запросов (1–100):')
         await state.set_state(AdminStates.wait_grant_amount)
+
     elif action == 'block':
-        c.execute('UPDATE users SET is_blocked=1 WHERE id=?', (uid,))
-        conn.commit()
+        c.execute('UPDATE users SET is_blocked=1 WHERE id=?', (uid,)); conn.commit()
         await call.message.answer(f'🚫 Заблокирован @{uname if uname!="ID "+str(uid) else uname}.')
+
     elif action == 'unblock':
-        c.execute('UPDATE users SET is_blocked=0 WHERE id=?', (uid,))
-        conn.commit()
+        c.execute('UPDATE users SET is_blocked=0 WHERE id=?', (uid,)); conn.commit()
         await call.message.answer(f'✅ Разблокирован @{uname if uname!="ID "+str(uid) else uname}.')
+
     elif action == 'reset':
-        c.execute('UPDATE users SET free_used=?, trial_expired=1 WHERE id=?', (TRIAL_LIMIT, uid))
-        conn.commit()
+        c.execute('UPDATE users SET free_used=?, trial_expired=1 WHERE id=?', (TRIAL_LIMIT, uid)); conn.commit()
         await call.message.answer(f'🔄 Триал завершён для @{uname if uname!="ID "+str(uid) else uname}.')
+
+    elif action in ('sub_month','sub_quarter','sub_lifetime'):
+        plan = action.split('_',1)[1]
+        now = int(time.time())
+        old = c.execute('SELECT subs_until FROM users WHERE id=?', (uid,)).fetchone()
+        old_until = int(old[0]) if old and old[0] else 0
+        new_until = max(now, old_until) + TARIFFS[plan]['days']*86400
+        c.execute('INSERT INTO users(id,subs_until) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET subs_until=excluded.subs_until',
+                  (uid, new_until))
+        # Триал считаем завершённым
+        c.execute('UPDATE users SET trial_expired=1 WHERE id=?', (uid,))
+        conn.commit()
+        until_txt = datetime.fromtimestamp(new_until).strftime('%Y-%m-%d')
+        await call.message.answer(f'🎟 Подписка «{plan}» выдана @{uname if uname!="ID "+str(uid) else uname} до {until_txt}.')
+
     else:
         await call.message.answer('Неизвестное действие.')
     await call.answer()
 
 @dp.message(AdminStates.wait_grant_amount)
 async def grant_amount_input(msg: Message, state: FSMContext):
+    if msg.from_user.id != OWNER_ID:
+        await state.clear(); return
+    if need_start(msg.from_user.id):
+        await state.clear()
+        return await ask_press_start(msg.chat.id)
     if not msg.text.isdigit():
         return await msg.answer('Введите число 1–100.')
     amount = int(msg.text)
@@ -506,7 +655,6 @@ async def grant_amount_input(msg: Message, state: FSMContext):
     if not uid:
         await state.clear()
         return await msg.answer('⚠️ Пользователь не выбран. Попробуйте снова.')
-
     c.execute('UPDATE users SET requests_left=? WHERE id=?', (amount, uid))
     conn.commit()
     uname = c.execute('SELECT username FROM users WHERE id=?', (uid,)).fetchone()
@@ -514,7 +662,7 @@ async def grant_amount_input(msg: Message, state: FSMContext):
     await msg.answer(f'✅ Выдано {amount} запросов @{uname if uname!="ID "+str(uid) else uname}.')
     await state.clear()
 
-# === Массовый сброс триала: асинхронно, чтобы не “висела” кнопка ===
+# === Массовый сброс триала (асинхронно) ===
 async def _reset_all_job(chat_id: int, message_id: int | None):
     ids = [row[0] for row in c.execute("SELECT id FROM users").fetchall()]
     total = len(ids)
@@ -532,24 +680,22 @@ async def _reset_all_job(chat_id: int, message_id: int | None):
         affected += changed
         try:
             await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
+                chat_id=chat_id, message_id=message_id,
                 text=f"🔄 Массовый сброс… {min(i+1000, total)}/{total}"
             )
         except:
             pass
     try:
-        await bot.edit_message_text(
-            chat_id=chat_id, message_id=message_id,
-            text=f"✅ Триал завершён у всех. Обновлено записей: {affected}."
-        )
+        await bot.edit_message_text(chat_id=chat_id, message_id=message_id,
+            text=f"✅ Триал завершён у всех. Обновлено записей: {affected}.")
     except:
         await bot.send_message(chat_id, f"✅ Триал завершён у всех. Обновлено записей: {affected}.")
 
 @dp.callback_query(F.data=='reset_all')
 async def reset_all(call: CallbackQuery, state: FSMContext):
-    if not is_admin(call.from_user.id):
-        return await call.answer()
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
     await call.answer('Запустил массовый сброс…')
     msg = await call.message.answer("🔄 Массовый сброс… 0%")
     asyncio.create_task(_reset_all_job(chat_id=msg.chat.id, message_id=msg.message_id))
@@ -566,9 +712,9 @@ async def search_handler(message: Message):
                   (message.from_user.username, uid))
     conn.commit()
 
-    boot_ack = c.execute("SELECT boot_ack_ts FROM users WHERE id=?", (uid,)).fetchone()[0]
-    if int(boot_ack or 0) < int(BOOT_TS):
-        return await message.answer("♻️ Бот был перезапущен. Нажмите /start, чтобы продолжить.")
+    # Гейт /start
+    if need_start(uid):
+        return await ask_press_start(message.chat.id)
 
     original_q = message.text.strip()
     q_for_api, norm_phone = normalize_query_if_phone(original_q)
@@ -608,6 +754,7 @@ async def search_handler(message: Message):
                     conn.commit()
                     return await message.answer('🔐 Триал окончен. Подпишитесь.', reply_markup=sub_keyboard())
 
+    # blacklist по оригиналу и по нормальному телефону
     black_hit = c.execute('SELECT 1 FROM blacklist WHERE value=?', (original_q,)).fetchone()
     if not black_hit and norm_phone:
         black_hit = c.execute('SELECT 1 FROM blacklist WHERE value=?', (norm_phone,)).fetchone()
@@ -665,11 +812,12 @@ async def search_handler(message: Message):
             items = grouped.get(grp) or []
             if not items:
                 continue
-            # сортируем по приоритету
+            # сортировка
             items.sort(key=lambda kv: sort_weight(grp, kv[0]))
             rows = "".join(f"<tr><td>{esc(k)}</td><td>{val}</td></tr>" for k, val in items)
-            # сворачиваемые секции (первые 2 открыты)
-            open_attr = " open" if grp in GROUP_ORDER[:2] else ""
+            # автосворачивание: первые две группы открыты, но если строк больше порога — закрыты
+            open_default = (grp in GROUP_ORDER[:2]) and (len(items) <= AUTO_COLLAPSE_THRESHOLD)
+            open_attr = " open" if open_default else ""
             group_html.append(f"""
 <details class="group"{open_attr}>
   <summary class="g-summary"><span class="caret"></span><span class="g-title">{esc(grp)}</span><span class="g-count">{len(items)}</span></summary>
@@ -729,7 +877,7 @@ async def search_handler(message: Message):
       font-size:1.05em; text-align:center; background:var(--bg);
       border-bottom:1px solid var(--accent);
     }}
-    /* Группы */
+    /* группы */
     .group {{ border-top:1px dashed rgba(102,252,241,.25); }}
     .g-summary {{
       list-style:none; cursor:pointer; user-select:none;
@@ -805,31 +953,39 @@ async def search_handler(message: Message):
     except:
         pass
 
-@dp.message(Command('status'))
-async def status_handler(message: Message):
-    uid = message.from_user.id
-    subs, fu, hd, rl, te, boot_ack = c.execute(
-        'SELECT subs_until,free_used,hidden_data,requests_left,trial_expired,boot_ack_ts FROM users WHERE id=?',
-        (uid,)
-    ).fetchone()
-    now = int(time.time())
-    if int(boot_ack or 0) < int(BOOT_TS):
-        return await message.answer("♻️ Бот был перезапущен. Нажмите /start, чтобы продолжить.")
-    if hd:
-        return await message.answer('🔒 Ваши данные скрыты.')
-    sub = datetime.fromtimestamp(subs).strftime('%Y-%m-%d') if subs > now else 'none'
-    free = 0 if te else TRIAL_LIMIT - fu
-    await message.answer(f"📊 Подписка: {sub}\nБесплатно осталось: {free}\nРучных осталось: {rl}")
-
-@dp.message(Command('help'))
-async def help_handler(message: Message):
-    await message.answer(
-        "/start  – запуск/обновление сессии\n"
-        "/status – статус и лимиты\n"
-        "/help   – справка\n"
-        "/admin322 – панель администратора (только у админа)\n"
-        "Отправьте любой текст для поиска."
-    )
+# === Покупка (публичная) ===
+@dp.callback_query(F.data.startswith('buy_'))
+async def buy_plan(callback: CallbackQuery):
+    plan = callback.data.split('_',1)[1]
+    if plan not in TARIFFS:
+        return await callback.answer('Неизвестный план', show_alert=True)
+    price = TARIFFS[plan]['price']
+    payload = f"pay_{callback.from_user.id}_{plan}_{int(time.time())}"
+    body = {
+        'asset': BASE_CURRENCY, 'amount': str(price),
+        'description': f"n3l0x: {plan}",
+        'payload': payload,
+        'allow_comments': False, 'allow_anonymous': True,
+        'expires_in': 1800
+    }
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                'https://pay.crypt.bot/api/createInvoice',
+                headers={'Crypto-Pay-API-Token': CRYPTOPAY_API_TOKEN},
+                json=body, timeout=10
+            ) as r:
+                data = await r.json()
+    except:
+        return await callback.message.answer('⚠️ Ошибка платежного сервиса.')
+    if not data.get('ok'):
+        return await callback.message.answer(f"⚠️ Ошибка: {data}")
+    url = data['result'].get('bot_invoice_url') or data['result'].get('pay_url')
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='💳 Оплатить', url=url)]
+    ])
+    await callback.message.answer(f"💳 План «{plan}» – ${price}", reply_markup=kb)
+    await callback.answer()
 
 # === Вебхуки ===
 async def health(request):
@@ -849,8 +1005,9 @@ async def cryptopay_webhook(request: web.Request):
             if plan == 'hide_data':
                 c.execute('UPDATE users SET hidden_data=1 WHERE id=?', (uid,))
             else:
-                old = c.execute('SELECT subs_until FROM users WHERE id=?', (uid,)).fetchone()[0]
-                ns = max(now, old) + TARIFFS[plan]['days']*86400
+                old = c.execute('SELECT subs_until FROM users WHERE id=?', (uid,)).fetchone()
+                old_until = int(old[0]) if old and old[0] else 0
+                ns = max(now, old_until) + TARIFFS[plan]['days']*86400
                 c.execute(
                     'INSERT INTO users(id,subs_until,free_used) VALUES(?,?,?) '
                     'ON CONFLICT(id) DO UPDATE SET subs_until=excluded.subs_until, free_used=0, trial_expired=1',
