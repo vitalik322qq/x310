@@ -371,19 +371,104 @@ def users_list_keyboard(action: str, page: int = 0) -> InlineKeyboardMarkup:
         if req_left:   status_bits.append(f"🧮{req_left}")
         if te:         status_bits.append("⛔trial")
         if not status_bits: status_bits.append("✅")
-        btn_    text = "👥 Список пользователей:\n" + ("\n".join(lines) if lines else "Пользователей нет.")
+        btn_text = f"{title}  {' '.join(status_bits)}"
+        kb_rows.append([InlineKeyboardButton(text=btn_text, callback_data=f"select:{action}:{uid}:{page}")])
+    nav = []
+    max_page = (total - 1) // PAGE_SIZE if total else 0
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"list:{action}:{page-1}"))
+    if page < max_page:
+        nav.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"list:{action}:{page+1}"))
+    if nav:
+        kb_rows.append(nav)
+    kb_rows.append([InlineKeyboardButton(text="🏠 В админ-меню", callback_data="admin_home")])
+    return InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+# === Хендлеры ===
+
+@dp.message(CommandStart())
+async def start_handler(message: Message):
+    uid = message.from_user.id
+    with conn:
+        c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)',
+                  (uid,0,0,0))
+        if message.from_user.username:
+            c.execute('UPDATE users SET username=? WHERE id=?',
+                      (message.from_user.username, uid))
+        c.execute('UPDATE users SET boot_ack_ts=? WHERE id=?', (int(BOOT_TS), uid))
+
+    hd, fu, te = c.execute(
+        'SELECT hidden_data,free_used,trial_expired FROM users WHERE id=?', (uid,)
+    ).fetchone()
+    if hd:
+        welcome = '<b>Ваши данные скрыты.</b>'
+    elif te:
+        welcome = '<b>Триал окончен.</b>'
+    else:
+        rem = TRIAL_LIMIT - fu
+        welcome = f'<b>Осталось {rem} бесплатных запросов.</b>' if rem > 0 else '<b>Триал окончен.</b>'
+    await message.answer(f"👾 Добро пожаловать в n3l0x!\n{welcome}", reply_markup=sub_keyboard())
+
+# --- ГЛОБАЛЬНЫЙ ГЕЙТ ДЛЯ КОМАНД (кроме /start) ---
+@dp.message(Command('status'))
+async def status_handler(message: Message):
+    uid = message.from_user.id
+    with conn:
+        c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
+    if need_start(uid):
+        return await ask_press_start(message.chat.id)
+
+    subs, fu, hd, rl, te, _ = c.execute(
+        'SELECT subs_until,free_used,hidden_data,requests_left,trial_expired,boot_ack_ts FROM users WHERE id=?',
+        (uid,)
+    ).fetchone()
+    now = int(time.time())
+    if hd:
+        return await message.answer('🔒 Ваши данные скрыты.')
+    sub = datetime.fromtimestamp(subs).strftime('%Y-%m-%d') if subs and subs > now else 'none'
+    free = 0 if te else TRIAL_LIMIT - fu
+    await message.answer(f"📊 Подписка: {sub}\nБесплатно осталось: {free}\nРучных осталось: {rl}")
+
+@dp.message(Command('help'))
+async def help_handler(message: Message):
+    uid = message.from_user.id
+    # Убедимся, что пользователь есть в БД
+    with conn:
+        c.execute('INSERT OR IGNORE INTO users(id,subs_until,free_used,hidden_data) VALUES(?,?,?,?)', (uid,0,0,0))
+    # Если нужно нажать /start после ребута
+    if need_start(uid):
+        return await ask_press_start(message.chat.id)
+
+    # Формируем список команд
+    help_text = (
+        "/start  – запуск/обновление сессии\n"
+        "/status – статус и лимиты\n"
+        "/help   – справка\n"
+    )
+    # Добавляем админ-команду только для админа
+    if is_admin(uid):
+        help_text += "/admin322 – панель администратора\n"
+    help_text += "Отправьте любой текст для поиска."
+
+    await message.answer(help_text)
+
+# --- Админ-меню (с гейтом /start) ---
+@dp.message(Command('admin322'))
+async def admin_menu(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    if need_start(message.from_user.id):
+        return await ask_press_start(message.chat.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='📊 Выдать запросы',    callback_data='give_requests')],
         [InlineKeyboardButton(text='🎟 Дать подписку',     callback_data='grant_sub')],
-        [InlineKeyboardButton(text='🧊 Скрыть данные',     callback_data='add_blacklist')],
-        [InlineKeyboardButton(text='🗑 Убрать из ЧС',      callback_data='remove_blacklist')],
+        [InlineKeyboardButton(text='🧊 Скрыть произвольные данные', callback_data='add_blacklist')],
+        [InlineKeyboardButton(text='🗑 Снять скрытие (удалить из ЧС)', callback_data='remove_blacklist')],
         [InlineKeyboardButton(text='🚫 Заблокировать',     callback_data='block_user')],
         [InlineKeyboardButton(text='✅ Разблокировать',    callback_data='unblock_user')],
         [InlineKeyboardButton(text='🔄 Завершить триал',   callback_data='reset_menu')],
-        [InlineKeyboardButton(text='👥 Все пользователи',  callback_data='view_users')],
     ])
     await message.answer('<b>Панель администратора:</b>', reply_markup=kb)
-
 
 @dp.callback_query(F.data == 'admin_home')
 async def admin_home(call: CallbackQuery):
@@ -392,20 +477,16 @@ async def admin_home(call: CallbackQuery):
     if need_start(call.from_user.id):
         await ask_press_start(call.message.chat.id)
         return await call.answer()
-    # Обновляем главное меню админа, перерисовываем
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='📊 Выдать запросы',    callback_data='give_requests')],
         [InlineKeyboardButton(text='🎟 Дать подписку',     callback_data='grant_sub')],
-        [InlineKeyboardButton(text='🧊 Скрыть данные',     callback_data='add_blacklist')],
-        [InlineKeyboardButton(text='🗑 Убрать из ЧС',      callback_data='remove_blacklist')],
+        [InlineKeyboardButton(text='🧊 Скрыть произвольные данные', callback_data='add_blacklist')],
+        [InlineKeyboardButton(text='🗑 Снять скрытие (удалить из ЧС)', callback_data='remove_blacklist')],
         [InlineKeyboardButton(text='🚫 Заблокировать',     callback_data='block_user')],
         [InlineKeyboardButton(text='✅ Разблокировать',    callback_data='unblock_user')],
         [InlineKeyboardButton(text='🔄 Завершить триал',   callback_data='reset_menu')],
-        [InlineKeyboardButton(text='👥 Все пользователи',  callback_data='view_users')],
     ])
     await call.message.edit_text('<b>Панель администратора:</b>', reply_markup=kb)
-    await call.answer()
-
     await call.answer()
 
 # --- ДАТЬ ПОДПИСКУ: выбор плана -> список пользователей ---
@@ -974,32 +1055,6 @@ async def buy_plan(callback: CallbackQuery):
     ])
     await callback.message.answer(f"💳 План «{plan}» – ${price}", reply_markup=kb)
     await callback.answer()
-
-# === Хендлер просмотра всех пользователей ===
-@dp.callback_query(F.data == 'view_users')
-async def view_users(call: CallbackQuery):
-    if not is_admin(call.from_user.id):
-        return await call.answer()
-    if need_start(call.from_user.id):
-        await ask_press_start(call.message.chat.id)
-        return await call.answer()
-    rows = c.execute("SELECT id, COALESCE(NULLIF(username,''),'') as uname, last_queries FROM users").fetchall()
-    now_ts = int(time.time())
-    lines = []
-    for uid, uname, last_q in rows:
-        name = f"@{uname}" if uname else f"ID {uid}"
-        times = [int(t) for t in last_q.split(',') if t]
-        last_ts = times[-1] if times else 0
-        status = "🟢 онлайн" if now_ts - last_ts <= 300 else "⚫ офлайн"
-        lines.append(f"{name} — {status}")
-    text = "👥 Список пользователей:
-" + ("
-".join(lines) if lines else "Пользователей нет.")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='🏠 В админ-меню', callback_data='admin_home')],
-    ])
-    await call.message.edit_text(text, reply_markup=kb)
-    await call.answer()
 
 # === Вебхуки ===
 async def health(request):
