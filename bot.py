@@ -440,18 +440,13 @@ async def help_handler(message: Message):
         return await ask_press_start(message.chat.id)
 
     # Формируем список команд
-    help_text = (
-        "/start  – запуск/обновление сессии
-"
-        "/status – статус и лимиты
-"
-        "/help   – справка
-"
-    )
+    help_text = """/start  – запуск/обновление сессии
+/status – статус и лимиты
+/help   – справка
+"""
     # Добавляем админ-команду только для админа
     if is_admin(uid):
-        help_text += "/admin322 – панель администратора
-"
+        help_text += "/admin322 – панель администратора\n"
     help_text += "Отправьте любой текст для поиска."
 
     await message.answer(help_text)
@@ -1084,7 +1079,9 @@ async def view_users(call: CallbackQuery):
         last_ts = times[-1] if times else 0
         status = "🟢 онлайн" if now_ts - last_ts <= 300 else "⚫ офлайн"
         lines.append(f"{name} — {status}")
-    text = "👥 Список пользователей:\n" + ("\n".join(lines) if lines else "Пользователей нет.")
+    text = "👥 Список пользователей:
+" + ("
+".join(lines) if lines else "Пользователей нет.")
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='🏠 В админ-меню', callback_data='admin_home')],
     ])
