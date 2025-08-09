@@ -29,6 +29,7 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 from bs4 import BeautifulSoup, NavigableString
 from pathlib import Path
 import base64
+import csv
 
 logging.basicConfig(level=logging.INFO)
 
@@ -282,20 +283,20 @@ with conn:
     c.execute("""
     CREATE TABLE IF NOT EXISTS meta (
         key TEXT PRIMARY KEY,
-
         value TEXT
     )""")
-
-
     c.execute("""
     CREATE TABLE IF NOT EXISTS queries (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        query TEXT,
-        normalized TEXT,
-        created_at INTEGER
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id      INTEGER,
+        query_text   TEXT,
+        norm_phone   TEXT,
+        created_at   INTEGER,
+        result_count INTEGER DEFAULT 0
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_queries_user_time ON queries(user_id, created_at DESC)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_queries_user ON queries(user_id)")
+
 
 # BOOT_TS — метка текущего запуска
 BOOT_TS = int(time.time())
@@ -404,9 +405,9 @@ def admin_kb_home(uid: int) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text=("▼ " if util_open else "► ") + "Сервис", callback_data="toggle:utils")])
     if util_open:
         rows += grid([
+            InlineKeyboardButton(text="📜 Запросы", callback_data="history_menu"),
             InlineKeyboardButton(text="🏠 Выйти из админки", callback_data="admin_close"),
             InlineKeyboardButton(text="♻️ Обновить",         callback_data="admin_home"),
-            InlineKeyboardButton(text="🕘 История запросов",  callback_data="history_pick"),
         ], cols=2)
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -2281,56 +2282,53 @@ def users_list_keyboard(action: str, page: int = 0) -> InlineKeyboardMarkup:
     kb_rows.append([InlineKeyboardButton(text="🏠 В админ-меню", callback_data="admin_home")])
     return InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
-# === Хендлеры ===
-
-
-# ---------- История запросов (админ) ----------
-HISTORY_PAGE = 10
-
-def _fmt_ts(ts: int) -> str:
-    try:
-        return datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M')
-    except Exception:
-        return str(ts)
-
-def fetch_history_page(uid: int, page: int, page_size: int = HISTORY_PAGE):
+def fetch_queries_page_for_user(user_id: int, page: int, page_size: int = 20):
     offset = page * page_size
     rows = c.execute(
-        "SELECT id, query, COALESCE(NULLIF(normalized,''), '') as norm, created_at "
-        "FROM queries WHERE user_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-        (uid, page_size, offset)
+        "SELECT query_text, COALESCE(NULLIF(norm_phone,''), '') as np, created_at, COALESCE(result_count,0) "
+        "FROM queries WHERE user_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (user_id, page_size, offset)
     ).fetchall()
-    total = c.execute("SELECT COUNT(*) FROM queries WHERE user_id=?", (uid,)).fetchone()[0]
+    total = c.execute("SELECT COUNT(*) FROM queries WHERE user_id=?", (user_id,)).fetchone()[0]
     return rows, total
 
-def history_page_text(uid: int, page: int = 0):
-    rows, total = fetch_history_page(uid, page)
-    if not rows:
-        return "🕘 История пуста."
-    start = page*HISTORY_PAGE + 1
-    lines_out = []
-    for i, (qid, q, norm, ts) in enumerate(rows, start=start):
-        mark = f" (норм.: {norm})" if norm and norm != q else ""
-        lines_out.append(f"{i}. {esc(q)}{esc(mark)} — <i>{_fmt_ts(ts)}</i>")
-    max_page = (total - 1) // HISTORY_PAGE if total else 0
-    head = f"🕘 Всего: {total}. Страница {page+1}/{max_page+1}\n"
-    return head + "\n".join(lines_out)
+def render_queries_text(user_id: int, page: int) -> str:
+    rows, total = fetch_queries_page_for_user(user_id, page)
+    if total == 0:
+        return "😶 Для этого пользователя запросов пока нет."
+    lines = [f"📄 Всего записей: {total}. Стр. {page+1}/{(total-1)//20+1}\n"]
+    for q, np, ts, cnt in rows:
+        dt = datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M')
+        tail = f"  • 🔎{cnt}" if cnt else ""
+        if np and np != q:
+            lines.append(f"• {dt} — {q} ({np}){tail}")
+        else:
+            lines.append(f"• {dt} — {q}{tail}")
+    return "\n".join(lines)
 
-def history_keyboard(uid: int, page: int = 0) -> InlineKeyboardMarkup:
-    rows, total = fetch_history_page(uid, page)
-    kb_rows = []
-    max_page = (total - 1) // HISTORY_PAGE if total else 0
+def queries_list_keyboard_for_user(user_id: int, page: int = 0) -> InlineKeyboardMarkup:
+    _, total = fetch_queries_page_for_user(user_id, page)
+    max_page = (total - 1) // 20 if total else 0
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"hist:list:{uid}:{page-1}"))
+        nav.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"qh:{user_id}:{page-1}"))
     if page < max_page:
-        nav.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"hist:list:{uid}:{page+1}"))
+        nav.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"qh:{user_id}:{page+1}"))
+    rows = []
     if nav:
-        kb_rows.append(nav)
-    kb_rows.append([InlineKeyboardButton(text="📄 Экспорт HTML", callback_data=f"hist:export:{uid}")])
-    kb_rows.append([InlineKeyboardButton(text="👥 К пользователям", callback_data="reset_to_users_history")])
-    kb_rows.append([InlineKeyboardButton(text="🏠 В админ-меню", callback_data="admin_home")])
-    return InlineKeyboardMarkup(inline_keyboard=kb_rows)
+        rows.append(nav)
+    rows.append([
+        InlineKeyboardButton(text="📄 Экспорт HTML", callback_data=f"qexp:html:{user_id}"),
+        InlineKeyboardButton(text="🧾 Экспорт CSV",  callback_data=f"qexp:csv:{user_id}")
+    ])
+    rows.append([
+        InlineKeyboardButton(text="👥 К пользователям", callback_data="history_menu"),
+        InlineKeyboardButton(text="🏠 В админ-меню", callback_data="admin_home")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# === Хендлеры ===
 
 @dp.message(CommandStart())
 async def start_handler(message: Message):
@@ -2532,59 +2530,79 @@ async def remove_blacklist_values(msg: Message, state: FSMContext):
     await admin_render(msg, f"✅ Из чёрного списка удалено: {removed} из {len(values)}.")
     await state.clear()
 
-# === Листинги пользователей (прочие экраны) ===
 
-@dp.callback_query(F.data == 'history_pick')
-async def history_pick_list(call: CallbackQuery):
+
+# === История запросов (админ) ===
+@dp.callback_query(F.data == 'history_menu')
+async def history_menu(call: CallbackQuery):
     if not is_admin(call.from_user.id): return await call.answer()
     if need_start(call.from_user.id):
         await ask_press_start(call.message.chat.id); return await call.answer()
-    kb = users_list_keyboard(action='history', page=0)
-    await admin_render(call, '👥 Выберите пользователя для истории запросов:', kb)
+    kb = users_list_keyboard(action='hist', page=0)
+    await admin_render(call, '👥 Выберите пользователя для просмотра истории запросов:', kb)
     await call.answer()
 
-@dp.callback_query(F.data == 'reset_to_users_history')
-async def reset_to_users_history(call: CallbackQuery):
+@dp.callback_query(F.data.startswith('qh:'))
+async def paginate_queries(call: CallbackQuery):
     if not is_admin(call.from_user.id): return await call.answer()
-    kb = users_list_keyboard(action='history', page=0)
-    await admin_render(call, '👥 Выберите пользователя для истории запросов:', kb)
-    await call.answer()
-
-@dp.callback_query(F.data.startswith('hist:list:'))
-async def history_list_paginate(call: CallbackQuery):
-    if not is_admin(call.from_user.id): return await call.answer()
-    _, _, uid_s, page_s = call.data.split(':', 3)
-    uid = int(uid_s); page = int(page_s)
-    text = history_page_text(uid, page)
-    kb = history_keyboard(uid, page)
+    try:
+        _, uid_s, page_s = call.data.split(':', 2)
+        uid = int(uid_s); page = int(page_s)
+    except Exception:
+        return await call.answer()
+    text = render_queries_text(uid, page)
+    kb = queries_list_keyboard_for_user(uid, page)
     await admin_render(call, text, kb)
     await call.answer()
 
-@dp.callback_query(F.data.startswith('hist:export:'))
-async def history_export(call: CallbackQuery):
+@dp.callback_query(F.data.startswith('qexp:'))
+async def export_queries(call: CallbackQuery):
     if not is_admin(call.from_user.id): return await call.answer()
-    uid_s = call.data.split(':', 2)[2]
-    uid = int(uid_s)
-    rows, total = fetch_history_page(uid, 0, page_size=10**9)  # all
-    html = "<!doctype html><meta charset='utf-8'><title>История запросов</title><body><h1>История запросов</h1><ol>"
-    for qid, q, norm, ts in rows:
-        when = _fmt_ts(ts)
-        if norm and norm != q:
-            html += f"<li><b>{esc(q)}</b> <i>(норм.: {esc(norm)})</i> — {when}</li>"
-        else:
-            html += f"<li><b>{esc(q)}</b> — {when}</li>"
-    html += "</ol></body>"
-    import tempfile
-    with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html', encoding='utf-8') as tf:
-        tf.write(html)
-        p = tf.name
-    await call.message.answer_document(FSInputFile(p, filename='history.html'))
     try:
-        os.unlink(p)
-    except:
-        pass
+        _, fmt, uid_s = call.data.split(':', 2)
+        uid = int(uid_s)
+    except Exception:
+        return await call.answer('Ошибка параметров')
+    rows = c.execute(
+        "SELECT created_at, query_text, COALESCE(NULLIF(norm_phone,''), ''), COALESCE(result_count,0) "
+        "FROM queries WHERE user_id=? ORDER BY created_at DESC LIMIT 5000",
+        (uid,)
+    ).fetchall()
+    if not rows:
+        return await call.answer('Пусто', show_alert=True)
+    if fmt == 'csv':
+        import io, csv, time, os, tempfile
+        fname = f"queries_{uid}_{int(time.time())}.csv"
+        tmp = tempfile.NamedTemporaryFile('w', delete=False, suffix='.csv', encoding='utf-8', newline='')
+        w = csv.writer(tmp)
+        w.writerow(['created_at','query','norm_phone','result_count'])
+        for ts, q, np, cnt in rows:
+            w.writerow([datetime.fromtimestamp(int(ts)).isoformat(sep=' '), q, np, int(cnt or 0)])
+        tmp.close()
+        await call.message.answer_document(FSInputFile(tmp.name, filename=fname))
+        try: os.unlink(tmp.name)
+        except: pass
+    else:
+        # html
+        import tempfile, os
+        lines = [
+            "<!doctype html><meta charset='utf-8'><title>Queries</title>",
+            "<style>body{font-family:Arial, sans-serif} table{border-collapse:collapse} td,th{border:1px solid #ccc;padding:6px 8px}</style>",
+            "<table><thead><tr><th>Время</th><th>Запрос</th><th>Норм.телефон</th><th>Совпадений</th></tr></thead><tbody>"
+        ]
+        for ts, q, np, cnt in rows:
+            dt = datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M:%S')
+            lines.append(f"<tr><td>{dt}</td><td>{esc(q)}</td><td>{esc(np)}</td><td>{int(cnt or 0)}</td></tr>")
+        lines.append("</tbody></table>")
+        html = "\n".join(lines)
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile('w', delete=False, suffix='.html', encoding='utf-8')
+        tmp.write(html); tmp.close()
+        await call.message.answer_document(FSInputFile(tmp.name, filename=f"queries_{uid}.html"))
+        try: os.unlink(tmp.name)
+        except: pass
     await call.answer()
-
+# === Листинги пользователей (прочие экраны) ===
 @dp.callback_query(F.data == 'give_requests')
 async def give_requests_list(call: CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id): return await call.answer()
@@ -2656,13 +2674,7 @@ async def user_selected(call: CallbackQuery, state: FSMContext):
     uname = row[0] if row and row[0] else f'ID {uid}'
     uname_print = f'@{uname}' if uname and not uname.startswith('ID ') else uname
 
-    if action == 'history':
-
-        txt, kb = history_keyboard(uid, page=0)
-
-        await admin_render(call, f"📜 История запросов пользователя {uname_print}:\n\n{txt}", kb)
-
-    elif action == 'give':
+    if action == 'give':
         await state.update_data(grant_uid=uid)
         await admin_render(call, f'Выбран {uname_print}.\n🔢 Введите количество запросов (1–100):')
         await state.set_state(AdminStates.wait_grant_amount)
@@ -2695,6 +2707,11 @@ async def user_selected(call: CallbackQuery, state: FSMContext):
         until_txt = datetime.fromtimestamp(new_until).strftime('%Y-%m-%d')
         await admin_render(call, f'🎟 Подписка «{plan}» выдана {uname_print} до {until_txt}.', admin_kb_home(call.from_user.id))
 
+    
+    elif action == 'hist':
+        text = render_queries_text(uid, 0)
+        kb = queries_list_keyboard_for_user(uid, 0)
+        await admin_render(call, text, kb)
     else:
         await admin_render(call, 'Неизвестное действие.', admin_kb_home(call.from_user.id))
     await call.answer()
@@ -2827,9 +2844,6 @@ async def search_handler(message: Message):
 
     shown_q = norm_phone if norm_phone else original_q
     await message.answer(f"🕷️ Выполняется поиск для <code>{shown_q}</code>…")
-    with conn:
-        c.execute('INSERT INTO queries(user_id,query,normalized,created_at) VALUES(?,?,?,?)', (uid, original_q, norm_phone or '', int(time.time())))
-
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -2844,7 +2858,21 @@ async def search_handler(message: Message):
     except (ClientError, asyncio.TimeoutError):
         return await message.answer('⚠️ Сетевая ошибка.')
 
-    if data.get('status') != 'success' or data.get('data', {}).get('count', 0) == 0:
+    
+    # Log query for admin history
+    try:
+        _rc = int((data.get('data') or {}).get('count') or 0)
+    except Exception:
+        _rc = 0
+    try:
+        with conn:
+            c.execute(
+                "INSERT INTO queries(user_id,query_text,norm_phone,created_at,result_count) VALUES(?,?,?,?,?)",
+                (uid, original_q, (norm_phone or ''), int(time.time()), _rc)
+            )
+    except Exception as _e:
+        logging.warning("Failed to log query: %s", _e)
+if data.get('status') != 'success' or data.get('data', {}).get('count', 0) == 0:
         return await message.answer('📡 Совпадений не найдено.')
 
     try:
