@@ -92,7 +92,7 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     .logo-slot{grid-column:2;display:flex;justify-content:center;align-items:center;min-height:48px}
     .logo-slot svg,.logo-slot img{display:block;height:44px;width:auto;max-width:100%}
     .header_query{grid-column:3;justify-self:end;opacity:.9;font-weight:600}
-    .wrap{display:grid;grid-template-columns:260px 1fr}
+    .wrap{display:grid;grid-template-columns:260px 1fr;grid-template-areas:'nav main'}
     .backdrop{display:none}
     nav{border-right:1px solid var(--line);background:var(--panel);min-height:calc(100vh - 72px)}
     .navigation_ul{list-style:none;margin:0;padding:10px}
@@ -113,6 +113,7 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     a{color:var(--accent);text-decoration:none}
     a:hover{text-decoration:underline}
     @media(max-width:920px){
+      .wrap :target ~ nav{display:none !important}.wrap :target ~ .backdrop{display:none !important}
       .wrap{grid-template-columns:1fr}
       nav{display:none}
       .nav-toggle{display:inline-flex}
@@ -134,13 +135,13 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     <div class="header_query"></div>
   </header>
   <label for="navchk" class="backdrop"></label>
-  <div class="wrap">
-    <nav><ul class="navigation_ul"></ul></nav>
-    <main><div class="databases"></div></main>
-  </div>
+  <div class="wrap"><div class="databases"></div>
+<nav><ul class="navigation_ul"></ul></nav>
+  <div class="backdrop"></div>
 
-  <script>
-  (function(){
+    
+    <main><div class="databases"></div></main>
+  </d{
     try{
       var chk = document.getElementById('navchk');
       var links = document.querySelectorAll('a.navigation_link');
