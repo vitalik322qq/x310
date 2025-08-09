@@ -98,7 +98,7 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     .navigation_ul{list-style:none;margin:0;padding:10px}
     .navigation_link{display:block;padding:8px 10px;margin:4px 0;background:var(--muted);color:var(--text);text-decoration:none;border:1px solid rgba(255,255,255,.06);border-radius:10px}
     main{padding:18px}
-    .db{border:1px solid var(--line);border-radius:14px;overflow:hidden;margin:0 0 18px;background:var(--panel);box-shadow:0 6px 24px rgba(0,0,0,.35)}
+    .db{border:1px solid var(--line);border-radius:14px;overflow:hidden;margin:0 0 18px;background:var(--panel);box-shadow:0 6px 24px rgba(0,0,0,.35);scroll-margin-top:76px}
     .db_header{padding:12px 14px;font-weight:800;letter-spacing:.3px;color:var(--accent);border-bottom:1px dashed var(--line);background:#0b1424}
     .db_cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;padding:12px}
     .card{background:var(--muted);border:1px solid rgba(255,255,255,.06);border-radius:12px;overflow:hidden}
@@ -135,6 +135,33 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     <nav><ul class="navigation_ul"></ul></nav>
     <main><div class="databases"></div></main>
   </div>
+
+  <script>
+  (function(){
+    try{
+      var chk = document.getElementById('navchk');
+      var links = document.querySelectorAll('a.navigation_link');
+      for (var i=0;i<links.length;i++){
+        links[i].addEventListener('click', function(e){
+          var href = this.getAttribute('href') || '';
+          if (href.charAt(0) === '#'){
+            var id = href.slice(1);
+            var el = document.getElementById(id);
+            if (el){
+              e.preventDefault();
+              if (chk) chk.checked = false; // close menu
+              try{ el.scrollIntoView({behavior:'smooth', block:'start'}); }
+              catch(e2){ location.hash = href; }
+              // update hash without jumping (optional)
+              try{ history.replaceState(null, '', '#' + id); }catch(_){}
+            }
+          }
+        });
+      }
+    }catch(_){}
+  })();
+  </script>
+
 </body>
 </html>"""
 
