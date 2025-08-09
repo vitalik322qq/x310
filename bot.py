@@ -2542,7 +2542,13 @@ async def user_selected(call: CallbackQuery, state: FSMContext):
     uname = row[0] if row and row[0] else f'ID {uid}'
     uname_print = f'@{uname}' if uname and not uname.startswith('ID ') else uname
 
-    if action == 'give':
+    if action == 'history':
+
+        txt, kb = history_keyboard(uid, page=0)
+
+        await admin_render(call, f"📜 История запросов пользователя {uname_print}:\n\n{txt}", kb)
+
+    elif action == 'give':if action == 'give':
         await state.update_data(grant_uid=uid)
         await admin_render(call, f'Выбран {uname_print}.\n🔢 Введите количество запросов (1–100):')
         await state.set_state(AdminStates.wait_grant_amount)
