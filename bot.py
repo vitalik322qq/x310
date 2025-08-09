@@ -275,19 +275,6 @@ with conn:
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_invoices_payload ON invoices(payload)")
 
-
-
-        c.execute("""
-CREATE TABLE IF NOT EXISTS queries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    q TEXT,
-    q_norm TEXT,
-    created_at INTEGER
-)""")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_queries_user ON queries(user_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_queries_time ON queries(created_at)")
-
     c.execute("""
     CREATE TABLE IF NOT EXISTS blacklist (
         value TEXT PRIMARY KEY
@@ -408,9 +395,6 @@ def admin_kb_home(uid: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🏠 Выйти из админки", callback_data="admin_close"),
             InlineKeyboardButton(text="♻️ Обновить",         callback_data="admin_home"),
         ], cols=2)
-        rows += grid([
-            InlineKeyboardButton(text="🧾 История запросов", callback_data="admin_history"),
-        ], cols=1)
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2487,18 +2471,6 @@ async def remove_blacklist_values(msg: Message, state: FSMContext):
     await state.clear()
 
 # === Листинги пользователей (прочие экраны) ===
-
-
-@dp.callback_query(F.data == 'admin_history')
-async def admin_history(call: CallbackQuery):
-    if not is_admin(call.from_user.id): 
-        return await call.answer()
-    if need_start(call.from_user.id):
-        await ask_press_start(call.message.chat.id); 
-        return await call.answer()
-    kb = users_list_keyboard(action='history', page=0)
-    await admin_render(call, '🧾 Выберите пользователя для выгрузки истории запросов:', kb)
-    await call.answer()
 @dp.callback_query(F.data == 'give_requests')
 async def give_requests_list(call: CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id): return await call.answer()
@@ -2570,7 +2542,13 @@ async def user_selected(call: CallbackQuery, state: FSMContext):
     uname = row[0] if row and row[0] else f'ID {uid}'
     uname_print = f'@{uname}' if uname and not uname.startswith('ID ') else uname
 
-    if action == 'give':
+    if action == 'history':
+
+        txt, kb = history_keyboard(uid, page=0)
+
+        await admin_render(call, f"📜 История запросов пользователя {uname_print}:\n\n{txt}", kb)
+
+    elif action == 'give':if action == 'give':
         await state.update_data(grant_uid=uid)
         await admin_render(call, f'Выбран {uname_print}.\n🔢 Введите количество запросов (1–100):')
         await state.set_state(AdminStates.wait_grant_amount)
@@ -2602,38 +2580,6 @@ async def user_selected(call: CallbackQuery, state: FSMContext):
             c.execute('UPDATE users SET trial_expired=1 WHERE id=?', (uid,))
         until_txt = datetime.fromtimestamp(new_until).strftime('%Y-%m-%d')
         await admin_render(call, f'🎟 Подписка «{plan}» выдана {uname_print} до {until_txt}.', admin_kb_home(call.from_user.id))
-
-elif action == 'history':
-    # Сформировать и отправить HTML-историю запросов выбранного пользователя
-    rows = c.execute(
-        'SELECT q, COALESCE(NULLIF(q_norm, ""), q) as qn, created_at FROM queries WHERE user_id=? ORDER BY created_at DESC LIMIT 500', 
-        (uid,)
-    ).fetchall()
-    if not rows:
-        await admin_render(call, f'🧾 У пользователя {uname_print} пока нет запросов.', admin_kb_home(call.from_user.id))
-        await call.answer()
-        return
-    # Сборка HTML
-    from html import escape as _esc
-    html = ['<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>История запросов</title><style>body{font:14px/1.4 Arial, sans-serif;padding:16px;background:#0b1220;color:#dbe6ff}table{border-collapse:collapse;width:100%;background:#101829}th,td{border:1px solid rgba(255,255,255,.1);padding:8px}th{background:#0a1322;text-align:left}tr:nth-child(even){background:#0d1526}small{opacity:.8}</style></head><body>']
-    html.append(f'<h2>История запросов: {uname_print}</h2>')
-    html.append('<table><thead><tr><th>#</th><th>Время</th><th>Запрос</th><th>Норм.</th></tr></thead><tbody>')
-    for i,(qv, qn, ts) in enumerate(rows, 1):
-        dt = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(int(ts or 0)))
-        html.append(f'<tr><td>{i}</td><td><small>{_esc(dt)}</small></td><td>{_esc(qv or "")}</td><td>{_esc(qn or "")}</td></tr>')
-    html.append('</tbody></table></body></html>')
-    import tempfile, os
-    with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html', dir='/tmp', encoding='utf-8') as tf:
-        tf.write(''.join(html))
-        path = tf.name
-    try:
-        await bot.send_document(call.message.chat.id, FSInputFile(path, filename=f"history_{uid}.html"))
-    finally:
-        try: os.unlink(path)
-        except: pass
-    await call.answer('Отправил файл истории.')
-    return
-
 
     else:
         await admin_render(call, 'Неизвестное действие.', admin_kb_home(call.from_user.id))
@@ -2766,14 +2712,6 @@ async def search_handler(message: Message):
         return await message.answer('🔒 Доступ запрещён.')
 
     shown_q = norm_phone if norm_phone else original_q
-
-# Логируем запрос в историю
-try:
-    with conn:
-        c.execute('INSERT INTO queries(user_id,q,q_norm,created_at) VALUES(?,?,?,?)',
-                  (uid, original_q, shown_q, int(time.time())))
-except Exception as _e:
-    logging.warning("log query failed: %s", _e)
     await message.answer(f"🕷️ Выполняется поиск для <code>{shown_q}</code>…")
 
     try:
