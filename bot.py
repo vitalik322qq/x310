@@ -89,20 +89,14 @@ EMBEDDED_TEMPLATE = """<!doctype html>
       .wrap{grid-template-columns:1fr}
       nav{display:none}
       .nav-toggle{display:inline-flex}
-      /* Show overlay when #menu is target */
-      #menu:target{display:block;position:fixed;inset:0;z-index:1000}
-      #menu:target .mnav-backdrop{display:block;position:absolute;inset:0;background:rgba(0,0,0,.5)}
-      #menu:target .mnav-panel{display:block;position:absolute;top:64px;left:0;right:0;bottom:0;background:var(--panel);overflow:auto;padding:10px}
-      .navigation_ul{list-style:none;margin:0;padding:10px}
-      .navigation_ul li{margin:6px 0}
-      .navigation_ul a{display:block;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:var(--muted);text-decoration:none;color:var(--text)}
-      .navigation_ul a:active{transform:translateY(1px)}
-      .mnav-header{position:sticky;top:0;display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--line);z-index:1}
-      .mnav-close{display:inline-flex;width:38px;height:38px;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:10px;text-decoration:none;color:var(--text);background:var(--muted)}
+      /* show the SAME desktop nav as overlay when #menu is target */
+      #menu:target ~ .wrap nav{display:block;position:fixed;top:64px;left:0;right:0;bottom:0;background:var(--panel);z-index:1000;overflow:auto;padding:10px}
+      #menu:target ~ .backdrop{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:900}
       .logo-slot svg,.logo-slot img{height:36px}
     }
     @media(max-width:480px){
       .logo-slot svg,.logo-slot img{height:28px}
+    }
     }
     :root{
       --bg:#0b1220; --panel:#101829; --muted:#0d1526; --text:#dbe6ff;
@@ -151,13 +145,7 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     <div class="logo-slot" aria-label="brand"></div>
     <div class="header_query"></div>
   </header>
-  <div id="menu" class="mnav">
-    <a class="mnav-backdrop" href="#close" aria-label="Закрыть"></a>
-    <div class="mnav-panel">
-      <div class="mnav-header">
-        <span>Навигация</span>
-        <a href="#close" class="mnav-close" aria-label="Закрыть">✕</a>
-      </div>
+  <a class="backdrop" href="#close" aria-label="Закрыть"></a>
       <ul class="navigation_ul"></ul>
     </div>
   </div>
@@ -2176,7 +2164,6 @@ def render_report_like_theirs(query_text: str, items: list[dict]) -> str:
         old.decompose()
 
     nav_ul = soup.select_one('nav .navigation_ul')
-    mnav_ul = soup.select_one('#menu .navigation_ul')
     if nav_ul:
         nav_ul.clear()
 
