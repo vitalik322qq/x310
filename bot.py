@@ -84,9 +84,10 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     }
     *{box-sizing:border-box}
     body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 Inter, Segoe UI, Roboto, Arial, sans-serif}
-    header{display:flex;align-items:center;gap:16px;padding:14px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#0c1426,#0a1120)}
-    .logo-slot{display:flex;align-items:center;min-height:48px}
-    .header_query{margin-left:auto;opacity:.9;font-weight:600}
+    header{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:16px;padding:14px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#0c1426,#0a1120)}
+    .logo-slot{grid-column:2;display:flex;justify-content:center;align-items:center;min-height:48px}
+    .logo-slot svg,.logo-slot img{display:block;height:44px;width:auto;max-width:100%}
+    .header_query{grid-column:3;justify-self:end;opacity:.9;font-weight:600}
     .wrap{display:grid;grid-template-columns:260px 1fr}
     nav{border-right:1px solid var(--line);background:var(--panel);min-height:calc(100vh - 72px)}
     .navigation_ul{list-style:none;margin:0;padding:10px}
@@ -103,7 +104,8 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     .row_right{padding:10px 12px;word-break:break-word}
     a{color:var(--accent);text-decoration:none}
     a:hover{text-decoration:underline}
-    @media(max-width:920px){.wrap{grid-template-columns:1fr}nav{display:none}}
+    @media(max-width:920px){.wrap{grid-template-columns:1fr}nav{display:none}.logo-slot svg,.logo-slot img{height:36px}}
+    @media(max-width:480px){.logo-slot svg,.logo-slot img{height:28px}}
   </style>
 </head>
 <body>
@@ -555,7 +557,11 @@ def render_report_like_theirs(query_text: str, items: list[dict]) -> str:
         slot.clear()
         frag = BeautifulSoup(EMBEDDED_LOGO_SVG, 'html.parser')
         node = frag.find('svg') or frag
-        slot.append(node)
+        # enforce responsive sizing
+if getattr(node, 'attrs', None):
+    node.attrs.pop('width', None)
+    node.attrs.pop('height', None)
+slot.append(node)
 
     # Запрос пользователя в хедере
     hq = soup.select_one('.header_query')
