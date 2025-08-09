@@ -96,8 +96,9 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     .backdrop{display:none}
     nav{border-right:1px solid var(--line);background:var(--panel);min-height:calc(100vh - 72px)}
     .navigation_ul{list-style:none;margin:0;padding:10px}
-    .navigation_ul .nav-item{display:block}
-    .navigation_ul .nav-item a{display:block}
+    .navigation_ul li{margin:6px 0}
+    .navigation_ul a{display:block;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:var(--muted);text-decoration:none;color:var(--text)}
+    .navigation_ul a:active{transform:translateY(1px)}
     .navigation_link{display:block;padding:8px 10px;margin:4px 0;background:var(--muted);color:var(--text);text-decoration:none;border:1px solid rgba(255,255,255,.06);border-radius:10px}
     main{padding:18px}
     .db{border:1px solid var(--line);border-radius:14px;overflow:hidden;margin:0 0 18px;background:var(--panel);box-shadow:0 6px 24px rgba(0,0,0,.35);scroll-margin-top:76px}
@@ -2179,17 +2180,12 @@ def render_report_like_theirs(query_text: str, items: list[dict]) -> str:
             cards_wrap.append(card)
 
         container.append(db)
-    if nav_ul:
-        li = soup.new_tag('li')
-        lab = soup.new_tag('label', **{'for': 'navchk', 'class': 'nav-item'})
-        a = soup.new_tag('a', href=f"#{safe_id}", **{'class': 'navigation_link'})
-        try:
-            a.string = friendly
-        except Exception:
+
+        if nav_ul:
+            li = soup.new_tag('li')
+            a = soup.new_tag('a', href=f"#{safe_id}", **{'class': 'navigation_link'})
             a.string = normalize_source_name(src)
-        lab.append(a)
-        li.append(lab)
-        nav_ul.append(li)
+            li.append(a); nav_ul.append(li)
 
     if not container.select('.db'):
         stub = soup.new_tag('div', **{'class':'db'})
