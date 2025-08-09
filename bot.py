@@ -1986,6 +1986,17 @@ KNOWN_SOURCES = {
     'ua_mix.callcenter_2023': 'ua_mix.callcenter_2023'
 }
 
+
+def normkey(s: str) -> str:
+    """Normalize arbitrary source names to a stable lookup key."""
+    import re as _re
+    s = (s or "").lower()
+    s = _re.sub(r"\s*\[[^\]]*\]\s*", "", s)
+    s = _re.sub(r"[«»\"“”‚‘’]", "", s)
+    s = _re.sub(r"[^a-z0-9а-яёіїєґ _\-./:@+]+", " ", s, flags=_re.I)
+    s = _re.sub(r"\s+", " ", s).strip()
+    return s
+
 def normalize_source_name(s: str) -> str:
     raw = (s or "").strip()
     low = raw.lower()
