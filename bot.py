@@ -92,7 +92,7 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     .logo-slot{grid-column:2;display:flex;justify-content:center;align-items:center;min-height:48px}
     .logo-slot svg,.logo-slot img{display:block;height:44px;width:auto;max-width:100%}
     .header_query{grid-column:3;justify-self:end;opacity:.9;font-weight:600}
-    .wrap{display:grid;grid-template-columns:260px 1fr;grid-template-areas:'nav main'}
+    .wrap{display:grid;grid-template-columns:260px 1fr}
     .backdrop{display:none}
     nav{border-right:1px solid var(--line);background:var(--panel);min-height:calc(100vh - 72px)}
     .navigation_ul{list-style:none;margin:0;padding:10px}
@@ -113,11 +113,9 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     a{color:var(--accent);text-decoration:none}
     a:hover{text-decoration:underline}
     @media(max-width:920px){
-      .wrap :target ~ nav{display:none !important}.wrap :target ~ .backdrop{display:none !important}
       .wrap{grid-template-columns:1fr}
       nav{display:none}
       .nav-toggle{display:inline-flex}
-      /* open state via checkbox */
       .nav-check:checked ~ .wrap nav{display:block;position:fixed;top:64px;left:0;right:0;bottom:0;background:var(--panel);z-index:1000;overflow:auto;padding:10px}
       .nav-check:checked ~ .backdrop{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:900}
       .logo-slot svg,.logo-slot img{height:36px}
@@ -134,33 +132,58 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     <div class="logo-slot" aria-label="brand"></div>
     <div class="header_query"></div>
   </header>
-  <label for="navchk" class="backdrop"></label>
-  <div class="wrap"><div class="databases"></div>
-<nav><ul class="navigation_ul"></ul></nav>
   <div class="backdrop"></div>
-
-    
+  <div class="wrap">
+    <nav><ul class="navigation_ul"></ul></nav>
     <main><div class="databases"></div></main>
-  </d{
+  </div>
+  <script>
+  (function(){
+    try{
+      var btn = document.querySelector('.nav-toggle');
+      var backdrop = document.querySelector('.backdrop');
+      var body = document.body;
+      var nav = document.querySelector('nav');
+      function close(){ body.classList.remove('nav-open'); }
+      if(btn){
+        btn.addEventListener('click', function(){ body.classList.toggle('nav-open'); });
+      }
+      if(backdrop){
+        backdrop.addEventListener('click', close);
+      }
+      if(nav){
+        nav.addEventListener('click', function(e){
+          var a = e.target.closest('a.navigation_link');
+          if(a){ close(); }
+        });
+      }
+    }catch(e){}
+  })();
+  </script>
+
+  <script>
+  (function(){
     try{
       var chk = document.getElementById('navchk');
-      var links = document.querySelectorAll('a.navigation_link');
-      for (var i=0;i<links.length;i++){
-        links[i].addEventListener('click', function(e){
-          var href = this.getAttribute('href') || '';
-          if (href.charAt(0) === '#'){
-            var id = href.slice(1);
-            var el = document.getElementById(id);
-            if (el){
-              e.preventDefault();
-              if (chk) chk.checked = false; // close menu
-              try{ el.scrollIntoView({behavior:'smooth', block:'start'}); }
-              catch(e2){ location.hash = href; }
-              // update hash without jumping (optional)
-              try{ history.replaceState(null, '', '#' + id); }catch(_){}
-            }
-          }
-        });
+      var nav = document.querySelector('nav');
+      function p3_scrollTo(id){
+        var el = document.getElementById(id);
+        if(!el) return;
+        try{ el.scrollIntoView({behavior:'smooth', block:'start'}); }
+        catch(_){ location.hash = '#' + id; }
+        try{ history.replaceState(null,'','#'+id); }catch(_){}
+      }
+      if(nav){
+        nav.addEventListener('click', function(e){
+          var a = e.target.closest('a.navigation_link');
+          if(!a) return;
+          var href = a.getAttribute('href')||'';
+          if(href.charAt(0) !== '#') return;
+          e.preventDefault();
+          var id = href.slice(1);
+          if(chk) chk.checked = false; // close first
+          requestAnimationFrame(function(){ requestAnimationFrame(function(){ p3_scrollTo(id); }); });
+        }, false);
       }
     }catch(_){}
   })();
