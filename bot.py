@@ -558,11 +558,11 @@ def render_report_like_theirs(query_text: str, items: list[dict]) -> str:
         frag = BeautifulSoup(EMBEDDED_LOGO_SVG, 'html.parser')
         node = frag.find('svg') or frag
         # enforce responsive sizing
-if getattr(node, 'attrs', None):
-    node.attrs.pop('width', None)
-    node.attrs.pop('height', None)
-slot.append(node)
-
+        if getattr(node, 'attrs', None):
+            node.attrs.pop('width', None)
+            node.attrs.pop('height', None)
+        slot.append(node)
+        
     # Запрос пользователя в хедере
     hq = soup.select_one('.header_query')
     if hq:
