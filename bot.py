@@ -1,3 +1,17 @@
+
+with conn:
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS queries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        query TEXT,
+        norm_phone TEXT,
+        created_at INTEGER,
+        ok INTEGER DEFAULT 0,
+        items_count INTEGER DEFAULT 0
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_queries_created_at ON queries(created_at)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_queries_user ON queries(user_id)")
 import os
 import logging
 import time
@@ -391,6 +405,7 @@ def admin_kb_home(uid: int) -> InlineKeyboardMarkup:
 
     rows.append([InlineKeyboardButton(text=("▼ " if util_open else "► ") + "Сервис", callback_data="toggle:utils")])
     if util_open:
+        rows.append([InlineKeyboardButton(text="📜 История запросов", callback_data="show_queries:0")])
         rows += grid([
             InlineKeyboardButton(text="🏠 Выйти из админки", callback_data="admin_close"),
             InlineKeyboardButton(text="♻️ Обновить",         callback_data="admin_home"),
@@ -2369,6 +2384,62 @@ async def admin_close(call: CallbackQuery):
 @dp.callback_query(F.data.startswith('toggle:'))
 async def admin_toggle(call: CallbackQuery):
     if not is_admin(call.from_user.id): return await call.answer()
+
+# === История запросов (админ) ===
+def fetch_queries_page(page: int = 0):
+    offset = max(0, page) * PAGE_SIZE
+    rows = c.execute(
+        "SELECT q.id, q.created_at, q.user_id, u.username, q.query, q.norm_phone, q.ok, q.items_count "
+        "FROM queries q LEFT JOIN users u ON u.id=q.user_id "
+        "ORDER BY q.id DESC LIMIT ? OFFSET ?",
+        (PAGE_SIZE, offset)
+    ).fetchall()
+    total = c.execute("SELECT COUNT(1) FROM queries").fetchone()[0]
+    return rows, total
+
+def queries_list_keyboard(page: int = 0) -> InlineKeyboardMarkup:
+    _, total = fetch_queries_page(page)
+    kb_rows = []
+    nav = []
+    max_page = (total - 1) // PAGE_SIZE if total else 0
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"show_queries:{page-1}"))
+    if page < max_page:
+        nav.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"show_queries:{page+1}"))
+    if nav:
+        kb_rows.append(nav)
+    kb_rows.append([InlineKeyboardButton(text="🏠 В админ-меню", callback_data="admin_home")])
+    return InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+def render_queries_page(page: int = 0) -> str:
+    rows, total = fetch_queries_page(page)
+    if not rows:
+        return "<b>История запросов пуста.</b>"
+    lines = [f"<b>История запросов</b> • всего: {total} • страница {page+1}"]
+    for rid, ts, uid, uname, q, nph, ok, cnt in rows:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(ts) if ts else 0))
+        who = f"@{uname}" if uname else f"ID {uid}"
+        disp_q = (nph if nph else q) or ""
+        ok_mark = "✅" if ok else "⚠️"
+        cnt_part = f" {cnt}шт" if cnt else ""
+        lines.append(f"{ok_mark} <code>{stamp}</code> • {who} • <code>{disp_q}</code>{cnt_part}")
+    return "\n".join(lines)
+
+@dp.callback_query(F.data.startswith("show_queries"))
+async def show_queries(call: CallbackQuery):
+    if not is_admin(call.from_user.id): 
+        return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); 
+        return await call.answer()
+    try:
+        page = int(call.data.split(":",1)[1])
+    except Exception:
+        page = 0
+    text = render_queries_page(page)
+    kb = queries_list_keyboard(page)
+    await admin_render(call, text, kb)
+    await call.answer()
     key = call.data.split(':',1)[1]
     opened = ADMIN_OPEN_SECTIONS.setdefault(call.from_user.id, set())
     if key in opened: opened.remove(key)
@@ -2734,6 +2805,15 @@ async def search_handler(message: Message):
     with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html', dir='/tmp', encoding='utf-8') as tf:
         tf.write(html_out)
         path = tf.name
+
+    
+    # — обновляем историю запроса как успешную
+    try:
+        if qid is not None:
+            with conn:
+                c.execute('UPDATE queries SET ok=?, items_count=? WHERE id=?', (1, len(items) if isinstance(items, list) else 0, qid))
+    except Exception as _e:
+        logging.exception("Failed to update query log: %s", _e)
 
     await message.answer_document(FSInputFile(path, filename=f"{shown_q}.html"))
     try:
