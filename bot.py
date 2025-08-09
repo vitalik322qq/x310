@@ -79,25 +79,6 @@ EMBEDDED_TEMPLATE = """<!doctype html>
   <link rel="icon" href="data:image/svg+xml,<svg/>">
   <style>
     html{scroll-behavior:smooth}
-    .nav-toggle{display:none;align-items:center;justify-content:center;width:42px;height:42px;border:1px solid var(--line);background:var(--muted);color:var(--text);border-radius:10px;cursor:pointer;text-decoration:none}
-    .nav-toggle:active{transform:translateY(1px)}
-    /* Mobile overlay (shown by :target on #menu) */
-    .mnav{display:none}
-    .mnav-backdrop{display:none}
-    .mnav-panel{display:none}
-    @media(max-width:920px){
-      .wrap{grid-template-columns:1fr}
-      nav{display:none}
-      .nav-toggle{display:inline-flex}
-      /* show the SAME desktop nav as overlay when #menu is target */
-      #menu:target ~ .wrap nav{display:block;position:fixed;top:64px;left:0;right:0;bottom:0;background:var(--panel);z-index:1000;overflow:auto;padding:10px}
-      #menu:target ~ .backdrop{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:900}
-      .logo-slot svg,.logo-slot img{height:36px}
-    }
-    @media(max-width:480px){
-      .logo-slot svg,.logo-slot img{height:28px}
-    }
-    }
     :root{
       --bg:#0b1220; --panel:#101829; --muted:#0d1526; --text:#dbe6ff;
       --accent:#0AEFFF; --accent2:#00E68E; --line:rgba(10,239,255,.25)
@@ -116,7 +97,7 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     .navigation_ul{list-style:none;margin:0;padding:10px}
     .navigation_link{display:block;padding:8px 10px;margin:4px 0;background:var(--muted);color:var(--text);text-decoration:none;border:1px solid rgba(255,255,255,.06);border-radius:10px}
     main{padding:18px}
-    .db{border:1px solid var(--line);border-radius:14px;overflow:hidden;margin:0 0 18px;background:var(--panel);box-shadow:0 6px 24px rgba(0,0,0,.35);scroll-margin-top:76px}
+    .db{border:1px solid var(--line);border-radius:14px;overflow:hidden;margin:0 0 18px;background:var(--panel);box-shadow:0 6px 24px rgba(0,0,0,.35)}
     .db_header{padding:12px 14px;font-weight:800;letter-spacing:.3px;color:var(--accent);border-bottom:1px dashed var(--line);background:#0b1424}
     .db_cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;padding:12px}
     .card{background:var(--muted);border:1px solid rgba(255,255,255,.06);border-radius:12px;overflow:hidden}
@@ -136,16 +117,53 @@ EMBEDDED_TEMPLATE = """<!doctype html>
       .logo-slot svg,.logo-slot img{height:36px}
     }
     @media(max-width:480px){.logo-slot svg,.logo-slot img{height:28px}}
+  
+/* === Mobile overlay nav (non-destructive) === */
+.nav-toggle{display:none;align-items:center;justify-content:center;width:42px;height:42px;border:1px solid var(--line);background:var(--muted);color:var(--text);border-radius:10px;cursor:pointer;text-decoration:none}
+.nav-toggle:active{transform:translateY(1px)}
+.mnav{display:none}
+.mnav-backdrop{display:none}
+.mnav-panel{display:none}
+@media(max-width:920px){
+  .wrap{grid-template-columns:1fr}
+  nav{display:none}
+  .nav-toggle{display:inline-flex}
+  /* Show overlay when #mnav is target */
+  #mnav:target{display:block;position:fixed;inset:0;z-index:1000}
+  #mnav:target .mnav-backdrop{display:block;position:absolute;inset:0;background:rgba(0,0,0,.5)}
+  #mnav:target .mnav-panel{display:block;position:absolute;top:64px;left:0;right:0;bottom:0;background:var(--panel);overflow:auto;padding:10px}
+  .mnav-header{position:sticky;top:0;display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--line);z-index:1}
+  .mnav-close{display:inline-flex;width:38px;height:38px;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:10px;text-decoration:none;color:var(--text);background:var(--muted)}
+  .navigation_ul{list-style:none;margin:0;padding:10px}
+  .navigation_ul li{margin:6px 0}
+  .navigation_ul a{display:block;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:var(--muted);text-decoration:none;color:var(--text)}
+  .navigation_ul a:active{transform:translateY(1px)}
+  .logo-slot svg,.logo-slot img{height:36px}
+}
+@media(max-width:480px){
+  .logo-slot svg,.logo-slot img{height:28px}
+}
+/* keep anchors visible under header */
+.db{scroll-margin-top:76px}
+
   </style>
 </head>
 <body>
   <div id="close"></div>
   <header>
-    <a href="#menu" class="nav-toggle" aria-label="Навигация" title="Навигация">☰</a>
+    <button class="nav-toggle" aria-label="Навигация" title="Навигация">☰</button>
     <div class="logo-slot" aria-label="brand"></div>
     <div class="header_query"></div>
   </header>
-  <a class="backdrop" href="#close" aria-label="Закрыть"></a>
+
+  <!-- Mobile overlay navigation (pure CSS via :target) -->
+  <div id="mnav" class="mnav">
+    <a class="mnav-backdrop" href="#close" aria-label="Закрыть"></a>
+    <div class="mnav-panel">
+      <div class="mnav-header">
+        <span>Навигация</span>
+        <a href="#close" class="mnav-close" aria-label="Закрыть">✕</a>
+      </div>
       <ul class="navigation_ul"></ul>
     </div>
   </div>
@@ -182,32 +200,7 @@ EMBEDDED_TEMPLATE = """<!doctype html>
 
 EMBEDDED_LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="260" viewBox="0 0 1200 260">
   <style>
-    html{scroll-behavior:smooth}
-    .nav-toggle{display:none;align-items:center;justify-content:center;width:42px;height:42px;border:1px solid var(--line);background:var(--muted);color:var(--text);border-radius:10px;cursor:pointer;text-decoration:none}
-    .nav-toggle:active{transform:translateY(1px)}
-    /* Mobile overlay (shown by :target on #menu) */
-    .mnav{display:none}
-    .mnav-backdrop{display:none}
-    .mnav-panel{display:none}
-    @media(max-width:920px){
-      .wrap{grid-template-columns:1fr}
-      nav{display:none}
-      .nav-toggle{display:inline-flex}
-      /* Show overlay when #menu is target */
-      #menu:target{display:block;position:fixed;inset:0;z-index:1000}
-      #menu:target .mnav-backdrop{display:block;position:absolute;inset:0;background:rgba(0,0,0,.5)}
-      #menu:target .mnav-panel{display:block;position:absolute;top:64px;left:0;right:0;bottom:0;background:var(--panel);overflow:auto;padding:10px}
-      .navigation_ul{list-style:none;margin:0;padding:10px}
-      .navigation_ul li{margin:6px 0}
-      .navigation_ul a{display:block;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:var(--muted);text-decoration:none;color:var(--text)}
-      .navigation_ul a:active{transform:translateY(1px)}
-      .mnav-header{position:sticky;top:0;display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--line);z-index:1}
-      .mnav-close{display:inline-flex;width:38px;height:38px;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:10px;text-decoration:none;color:var(--text);background:var(--muted)}
-      .logo-slot svg,.logo-slot img{height:36px}
-    }
-    @media(max-width:480px){
-      .logo-slot svg,.logo-slot img{height:28px}
-    }.logo{font:700 128px/1 'Inter','Segoe UI','Roboto','Arial',sans-serif;letter-spacing:.5px}</style>
+    html{scroll-behavior:smooth}.logo{font:700 128px/1 'Inter','Segoe UI','Roboto','Arial',sans-serif;letter-spacing:.5px}</style>
   <text class="logo" x="20" y="170" fill="#EAF2FF">
     P<tspan fill="#00E68E">3</tspan>rsona<tspan fill="#0AEFFF">Scan</tspan>
   </text>
@@ -2164,6 +2157,7 @@ def render_report_like_theirs(query_text: str, items: list[dict]) -> str:
         old.decompose()
 
     nav_ul = soup.select_one('nav .navigation_ul')
+    mnav_ul = soup.select_one('#mnav .navigation_ul')
     if nav_ul:
         nav_ul.clear()
 
@@ -2221,7 +2215,15 @@ def render_report_like_theirs(query_text: str, items: list[dict]) -> str:
             li = soup.new_tag('li')
             a = soup.new_tag('a', href=f"#{safe_id}", **{'class': 'navigation_link'})
             a.string = normalize_source_name(src)
-            li.append(a); nav_ul.append(li)
+            li.append(a)
+            if nav_ul:
+                nav_ul.append(li)
+            if mnav_ul:
+                li2 = soup.new_tag('li')
+                a2 = soup.new_tag('a', href=f"#{safe_id}", **{'class': 'navigation_link'})
+                a2.string = normalize_source_name(src)
+                li2.append(a2)
+                mnav_ul.append(li2)
 
     if not container.select('.db'):
         stub = soup.new_tag('div', **{'class':'db'})
