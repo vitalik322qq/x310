@@ -78,17 +78,21 @@ EMBEDDED_TEMPLATE = """<!doctype html>
   <title>UserBox Report</title>
   <link rel="icon" href="data:image/svg+xml,<svg/>">
   <style>
+    html{scroll-behavior:smooth}
     :root{
       --bg:#0b1220; --panel:#101829; --muted:#0d1526; --text:#dbe6ff;
       --accent:#0AEFFF; --accent2:#00E68E; --line:rgba(10,239,255,.25)
     }
     *{box-sizing:border-box}
     body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 Inter, Segoe UI, Roboto, Arial, sans-serif}
-    header{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:16px;padding:14px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#0c1426,#0a1120)}
+    header{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:16px;padding:14px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#0c1426,#0a1120)}
+    .nav-toggle{display:none;align-items:center;justify-content:center;width:42px;height:42px;border:1px solid var(--line);background:var(--muted);color:var(--text);border-radius:10px;cursor:pointer}
+    .nav-toggle:active{transform:translateY(1px)}
     .logo-slot{grid-column:2;display:flex;justify-content:center;align-items:center;min-height:48px}
     .logo-slot svg,.logo-slot img{display:block;height:44px;width:auto;max-width:100%}
     .header_query{grid-column:3;justify-self:end;opacity:.9;font-weight:600}
     .wrap{display:grid;grid-template-columns:260px 1fr}
+    .backdrop{display:none}
     nav{border-right:1px solid var(--line);background:var(--panel);min-height:calc(100vh - 72px)}
     .navigation_ul{list-style:none;margin:0;padding:10px}
     .navigation_link{display:block;padding:8px 10px;margin:4px 0;background:var(--muted);color:var(--text);text-decoration:none;border:1px solid rgba(255,255,255,.06);border-radius:10px}
@@ -104,24 +108,57 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     .row_right{padding:10px 12px;word-break:break-word}
     a{color:var(--accent);text-decoration:none}
     a:hover{text-decoration:underline}
-    @media(max-width:920px){.wrap{grid-template-columns:1fr}nav{display:none}.logo-slot svg,.logo-slot img{height:36px}}
+    @media(max-width:920px){
+      .wrap{grid-template-columns:1fr}
+      nav{display:none}
+      .nav-toggle{display:inline-flex}
+      body.nav-open nav{display:block;position:fixed;top:64px;left:0;right:0;bottom:0;background:var(--panel);z-index:1000;overflow:auto;padding:10px}
+      body.nav-open .backdrop{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:900}
+      .logo-slot svg,.logo-slot img{height:36px}
+    }
     @media(max-width:480px){.logo-slot svg,.logo-slot img{height:28px}}
   </style>
 </head>
 <body>
   <header>
+    <button class="nav-toggle" aria-label="Навигация" title="Навигация">☰</button>
     <div class="logo-slot" aria-label="brand"></div>
     <div class="header_query"></div>
   </header>
+  <div class="backdrop"></div>
   <div class="wrap">
     <nav><ul class="navigation_ul"></ul></nav>
     <main><div class="databases"></div></main>
   </div>
+  <script>
+  (function(){
+    try{
+      var btn = document.querySelector('.nav-toggle');
+      var backdrop = document.querySelector('.backdrop');
+      var body = document.body;
+      var nav = document.querySelector('nav');
+      function close(){ body.classList.remove('nav-open'); }
+      if(btn){
+        btn.addEventListener('click', function(){ body.classList.toggle('nav-open'); });
+      }
+      if(backdrop){
+        backdrop.addEventListener('click', close);
+      }
+      if(nav){
+        nav.addEventListener('click', function(e){
+          var a = e.target.closest('a.navigation_link');
+          if(a){ close(); }
+        });
+      }
+    }catch(e){}
+  })();
+  </script>
 </body>
 </html>"""
 
 EMBEDDED_LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="260" viewBox="0 0 1200 260">
-  <style>.logo{font:700 128px/1 'Inter','Segoe UI','Roboto','Arial',sans-serif;letter-spacing:.5px}</style>
+  <style>
+    html{scroll-behavior:smooth}.logo{font:700 128px/1 'Inter','Segoe UI','Roboto','Arial',sans-serif;letter-spacing:.5px}</style>
   <text class="logo" x="20" y="170" fill="#EAF2FF">
     P<tspan fill="#00E68E">3</tspan>rsona<tspan fill="#0AEFFF">Scan</tspan>
   </text>
@@ -486,6 +523,48 @@ def sort_weight(group: str, key: str) -> tuple[int, str]:
             return (i + 100, k)
     return (1000, k)
 
+
+# --- Алиасы человеко-понятных названий источников ---
+SOURCE_ALIASES = {
+    "dea": "DEA",
+    "olx": "OLX",
+    "nova poshta": "Нова пошта",
+    "novaposhta": "Нова пошта",
+    "nova_pochta": "Нова пошта",
+    "np": "Нова пошта",
+    "ukr poshta": "Укрпошта",
+    "ukrposhta": "Укрпошта",
+    "mvs": "МВС",
+    "mvd": "МВД",
+    "minjust": "Минюст",
+    "instagram": "Instagram",
+    "facebook": "Facebook",
+    "linkedin": "LinkedIn",
+    "tiktok": "TikTok",
+    "telegram": "Telegram",
+    "twitter": "Twitter",
+    "x.com": "Twitter/X",
+    "x ": "Twitter/X",
+}
+
+def normalize_source_name(s: str) -> str:
+    raw = (s or "").strip()
+    low = raw.lower()
+
+    # прямые алиасы по подстроке
+    for k, v in SOURCE_ALIASES.items():
+        if k in low:
+            return v
+
+    # чистка от непонятных символов (оставим буквы/цифры/базовую пунктуацию/пробел)
+    cleaned = re.sub(r"[^A-Za-zА-Яа-я0-9 .,_\-+/()&:]", "", raw)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    # для коротких аббревиатур делаем верхний регистр
+    if cleaned and len(cleaned) <= 4 and cleaned.replace(" ", "").isalpha():
+        return cleaned.upper()
+
+    return cleaned or "Источник"
 # === Рендер отчёта «как у них» ===
 def _beautify_label_for_template(k: str) -> str:
     m = {
@@ -592,7 +671,8 @@ def render_report_like_theirs(query_text: str, items: list[dict]) -> str:
 
         db = soup.new_tag('div', **{'class': 'db', 'id': safe_id})
         header = soup.new_tag('div', **{'class': 'db_header'})
-        header.string = f"{src} [{year}]" if year else src
+        friendly = normalize_source_name(src)
+        header.string = f"{friendly} [{year}]" if year else friendly
         db.append(header)
 
         cards_wrap = soup.new_tag('div', **{'class': 'db_cards'})
@@ -631,7 +711,7 @@ def render_report_like_theirs(query_text: str, items: list[dict]) -> str:
         if nav_ul:
             li = soup.new_tag('li')
             a = soup.new_tag('a', href=f"#{safe_id}", **{'class': 'navigation_link'})
-            a.string = src
+            a.string = normalize_source_name(src)
             li.append(a); nav_ul.append(li)
 
     if not container.select('.db'):
