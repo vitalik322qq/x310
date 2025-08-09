@@ -2176,6 +2176,7 @@ def render_report_like_theirs(query_text: str, items: list[dict]) -> str:
         old.decompose()
 
     nav_ul = soup.select_one('nav .navigation_ul')
+    mnav_ul = soup.select_one('#menu .navigation_ul')
     if nav_ul:
         nav_ul.clear()
 
