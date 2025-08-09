@@ -78,13 +78,32 @@ EMBEDDED_TEMPLATE = """<!doctype html>
   <title>UserBox Report</title>
   <link rel="icon" href="data:image/svg+xml,<svg/>">
   <style>
-    /* p3 mobile reliability */
-    .backdrop{pointer-events:none}
-    .nav-check:checked ~ .backdrop{pointer-events:auto}
-    nav, .navigation_ul, .navigation_ul a{pointer-events:auto}
-
     html{scroll-behavior:smooth}
-    .nav-check{position:absolute;opacity:0;pointer-events:none}
+    .nav-toggle{display:none;align-items:center;justify-content:center;width:42px;height:42px;border:1px solid var(--line);background:var(--muted);color:var(--text);border-radius:10px;cursor:pointer;text-decoration:none}
+    .nav-toggle:active{transform:translateY(1px)}
+    /* Mobile overlay (shown by :target on #menu) */
+    .mnav{display:none}
+    .mnav-backdrop{display:none}
+    .mnav-panel{display:none}
+    @media(max-width:920px){
+      .wrap{grid-template-columns:1fr}
+      nav{display:none}
+      .nav-toggle{display:inline-flex}
+      /* Show overlay when #menu is target */
+      #menu:target{display:block;position:fixed;inset:0;z-index:1000}
+      #menu:target .mnav-backdrop{display:block;position:absolute;inset:0;background:rgba(0,0,0,.5)}
+      #menu:target .mnav-panel{display:block;position:absolute;top:64px;left:0;right:0;bottom:0;background:var(--panel);overflow:auto;padding:10px}
+      .navigation_ul{list-style:none;margin:0;padding:10px}
+      .navigation_ul li{margin:6px 0}
+      .navigation_ul a{display:block;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:var(--muted);text-decoration:none;color:var(--text)}
+      .navigation_ul a:active{transform:translateY(1px)}
+      .mnav-header{position:sticky;top:0;display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--line);z-index:1}
+      .mnav-close{display:inline-flex;width:38px;height:38px;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:10px;text-decoration:none;color:var(--text);background:var(--muted)}
+      .logo-slot svg,.logo-slot img{height:36px}
+    }
+    @media(max-width:480px){
+      .logo-slot svg,.logo-slot img{height:28px}
+    }
     :root{
       --bg:#0b1220; --panel:#101829; --muted:#0d1526; --text:#dbe6ff;
       --accent:#0AEFFF; --accent2:#00E68E; --line:rgba(10,239,255,.25)
@@ -101,9 +120,6 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     .backdrop{display:none}
     nav{border-right:1px solid var(--line);background:var(--panel);min-height:calc(100vh - 72px)}
     .navigation_ul{list-style:none;margin:0;padding:10px}
-    .navigation_ul li{margin:6px 0}
-    .navigation_ul a{display:block;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:var(--muted);text-decoration:none;color:var(--text)}
-    .navigation_ul a:active{transform:translateY(1px)}
     .navigation_link{display:block;padding:8px 10px;margin:4px 0;background:var(--muted);color:var(--text);text-decoration:none;border:1px solid rgba(255,255,255,.06);border-radius:10px}
     main{padding:18px}
     .db{border:1px solid var(--line);border-radius:14px;overflow:hidden;margin:0 0 18px;background:var(--panel);box-shadow:0 6px 24px rgba(0,0,0,.35);scroll-margin-top:76px}
@@ -121,22 +137,30 @@ EMBEDDED_TEMPLATE = """<!doctype html>
       .wrap{grid-template-columns:1fr}
       nav{display:none}
       .nav-toggle{display:inline-flex}
-      .nav-check:checked ~ .wrap nav{display:block;position:fixed;top:64px;left:0;right:0;bottom:0;background:var(--panel);z-index:1000;overflow:auto;padding:10px}
-      .nav-check:checked ~ .backdrop{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:900}
+      body.nav-open nav{display:block;position:fixed;top:64px;left:0;right:0;bottom:0;background:var(--panel);z-index:1000;overflow:auto;padding:10px}
+      body.nav-open .backdrop{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:900}
       .logo-slot svg,.logo-slot img{height:36px}
     }
-    @media(max-width:480px){
-      .logo-slot svg,.logo-slot img{height:28px}
-    }}
+    @media(max-width:480px){.logo-slot svg,.logo-slot img{height:28px}}
   </style>
 </head>
 <body>
-  <input type="checkbox" id="navchk" class="nav-check" />
+  <div id="close"></div>
   <header>
-    <label for="navchk" class="nav-toggle" aria-label="Навигация" title="Навигация">☰</label>
+    <a href="#menu" class="nav-toggle" aria-label="Навигация" title="Навигация">☰</a>
     <div class="logo-slot" aria-label="brand"></div>
     <div class="header_query"></div>
   </header>
+  <div id="menu" class="mnav">
+    <a class="mnav-backdrop" href="#close" aria-label="Закрыть"></a>
+    <div class="mnav-panel">
+      <div class="mnav-header">
+        <span>Навигация</span>
+        <a href="#close" class="mnav-close" aria-label="Закрыть">✕</a>
+      </div>
+      <ul class="navigation_ul"></ul>
+    </div>
+  </div>
   <div class="backdrop"></div>
   <div class="wrap">
     <nav><ul class="navigation_ul"></ul></nav>
@@ -165,47 +189,37 @@ EMBEDDED_TEMPLATE = """<!doctype html>
     }catch(e){}
   })();
   </script>
-
-  <script>
-  (function(){
-    try{
-      var chk = document.getElementById('navchk');
-      var nav = document.querySelector('nav');
-      function p3_scrollTo(id){
-        var el = document.getElementById(id);
-        if(!el) return;
-        try{ el.scrollIntoView({behavior:'smooth', block:'start'}); }
-        catch(_){ location.hash = '#' + id; }
-        try{ history.replaceState(null,'','#'+id); }catch(_){}
-      }
-      if(nav){
-        nav.addEventListener('click', function(e){
-          var a = e.target.closest('a.navigation_link');
-          if(!a) return;
-          var href = a.getAttribute('href')||'';
-          if(href.charAt(0) !== '#') return;
-          e.preventDefault();
-          var id = href.slice(1);
-          if(chk) chk.checked = false; // close first
-          requestAnimationFrame(function(){ requestAnimationFrame(function(){ p3_scrollTo(id); }); });
-        }, false);
-      }
-    }catch(_){}
-  })();
-  </script>
-
 </body>
 </html>"""
 
 EMBEDDED_LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="260" viewBox="0 0 1200 260">
   <style>
-    /* p3 mobile reliability */
-    .backdrop{pointer-events:none}
-    .nav-check:checked ~ .backdrop{pointer-events:auto}
-    nav, .navigation_ul, .navigation_ul a{pointer-events:auto}
-
     html{scroll-behavior:smooth}
-    .nav-check{position:absolute;opacity:0;pointer-events:none}.logo{font:700 128px/1 'Inter','Segoe UI','Roboto','Arial',sans-serif;letter-spacing:.5px}</style>
+    .nav-toggle{display:none;align-items:center;justify-content:center;width:42px;height:42px;border:1px solid var(--line);background:var(--muted);color:var(--text);border-radius:10px;cursor:pointer;text-decoration:none}
+    .nav-toggle:active{transform:translateY(1px)}
+    /* Mobile overlay (shown by :target on #menu) */
+    .mnav{display:none}
+    .mnav-backdrop{display:none}
+    .mnav-panel{display:none}
+    @media(max-width:920px){
+      .wrap{grid-template-columns:1fr}
+      nav{display:none}
+      .nav-toggle{display:inline-flex}
+      /* Show overlay when #menu is target */
+      #menu:target{display:block;position:fixed;inset:0;z-index:1000}
+      #menu:target .mnav-backdrop{display:block;position:absolute;inset:0;background:rgba(0,0,0,.5)}
+      #menu:target .mnav-panel{display:block;position:absolute;top:64px;left:0;right:0;bottom:0;background:var(--panel);overflow:auto;padding:10px}
+      .navigation_ul{list-style:none;margin:0;padding:10px}
+      .navigation_ul li{margin:6px 0}
+      .navigation_ul a{display:block;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:var(--muted);text-decoration:none;color:var(--text)}
+      .navigation_ul a:active{transform:translateY(1px)}
+      .mnav-header{position:sticky;top:0;display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--line);z-index:1}
+      .mnav-close{display:inline-flex;width:38px;height:38px;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:10px;text-decoration:none;color:var(--text);background:var(--muted)}
+      .logo-slot svg,.logo-slot img{height:36px}
+    }
+    @media(max-width:480px){
+      .logo-slot svg,.logo-slot img{height:28px}
+    }.logo{font:700 128px/1 'Inter','Segoe UI','Roboto','Arial',sans-serif;letter-spacing:.5px}</style>
   <text class="logo" x="20" y="170" fill="#EAF2FF">
     P<tspan fill="#00E68E">3</tspan>rsona<tspan fill="#0AEFFF">Scan</tspan>
   </text>
@@ -2217,7 +2231,7 @@ def render_report_like_theirs(query_text: str, items: list[dict]) -> str:
 
         if nav_ul:
             li = soup.new_tag('li')
-            a = soup.new_tag('a', href=f"#{safe_id}", **{'class': 'navigation_link', 'onclick': 'return window._p3nav && window._p3nav(this);'})
+            a = soup.new_tag('a', href=f"#{safe_id}", **{'class': 'navigation_link'})
             a.string = normalize_source_name(src)
             li.append(a); nav_ul.append(li)
 
