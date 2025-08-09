@@ -285,6 +285,16 @@ with conn:
         value TEXT
     )""")
 
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS queries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        query_text TEXT,
+        created_at INTEGER
+    )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_queries_user_time ON queries(user_id, created_at)")
 # BOOT_TS — метка текущего запуска
 BOOT_TS = int(time.time())
 with conn:
@@ -392,6 +402,7 @@ def admin_kb_home(uid: int) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text=("▼ " if util_open else "► ") + "Сервис", callback_data="toggle:utils")])
     if util_open:
         rows += grid([
+            InlineKeyboardButton(text="🧾 История запросов", callback_data="history_menu"),
             InlineKeyboardButton(text="🏠 Выйти из админки", callback_data="admin_close"),
             InlineKeyboardButton(text="♻️ Обновить",         callback_data="admin_home"),
         ], cols=2)
@@ -2346,6 +2357,16 @@ async def admin_menu(message: Message):
         pass
 
 @dp.callback_query(F.data == 'admin_home')
+
+@dp.callback_query(F.data == 'history_menu')
+async def history_menu(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
+    kb = users_list_keyboard(action='history', page=0)
+    await admin_render(call, '👥 Чью историю запросов показать?', kb)
+    await call.answer()
+
 async def admin_home(call: CallbackQuery):
     if not is_admin(call.from_user.id): return await call.answer()
     if need_start(call.from_user.id):
@@ -2575,6 +2596,33 @@ async def user_selected(call: CallbackQuery, state: FSMContext):
         until_txt = datetime.fromtimestamp(new_until).strftime('%Y-%m-%d')
         await admin_render(call, f'🎟 Подписка «{plan}» выдана {uname_print} до {until_txt}.', admin_kb_home(call.from_user.id))
 
+    
+    elif action == 'history':
+        rows = c.execute('SELECT query_text, created_at FROM queries WHERE user_id=? ORDER BY created_at DESC LIMIT 200', (uid,)).fetchall()
+        if not rows:
+            await admin_render(call, f'ℹ️ У {uname_print} ещё нет сохранённых запросов.', admin_kb_home(call.from_user.id))
+        else:
+            lines = []
+            lines.append('<!doctype html><meta charset="utf-8"><title>История запросов</title>')
+            lines.append('<style>body{font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;padding:16px;} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #ccc;padding:8px;text-align:left;} th{background:#f5f5f5;} code{white-space:pre-wrap}</style>')
+            lines.append(f'<h2>История запросов: {uname_print}</h2>')
+            lines.append('<table><thead><tr><th>#</th><th>Дата/время</th><th>Запрос</th></tr></thead><tbody>')
+            for i,(q, ts) in enumerate(rows, start=1):
+                dt = datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M:%S')
+                from html import escape as _esc
+                lines.append(f'<tr><td>{i}</td><td>{_esc(dt)}</td><td><code>{_esc(q)}</code></td></tr>')
+            lines.append('</tbody></table>')
+            html = "\n".join(lines)
+            import tempfile, os
+            with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html', encoding='utf-8') as tf:
+                tf.write(html)
+                path = tf.name
+            await bot.send_document(call.message.chat.id, FSInputFile(path, filename='history.html'))
+            try:
+                os.unlink(path)
+            except:
+                pass
+        await admin_render(call, "<b>Панель администратора</b>", admin_kb_home(call.from_user.id))
     else:
         await admin_render(call, 'Неизвестное действие.', admin_kb_home(call.from_user.id))
     await call.answer()
@@ -2706,6 +2754,9 @@ async def search_handler(message: Message):
         return await message.answer('🔒 Доступ запрещён.')
 
     shown_q = norm_phone if norm_phone else original_q
+    # Log the query for admin history
+    with conn:
+        c.execute('INSERT INTO queries(user_id,query_text,created_at) VALUES(?,?,?)', (uid, original_q, int(time.time())))
     await message.answer(f"🕷️ Выполняется поиск для <code>{shown_q}</code>…")
 
     try:
