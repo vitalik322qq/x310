@@ -79,6 +79,7 @@ EMBEDDED_TEMPLATE = """<!doctype html>
   <link rel="icon" href="data:image/svg+xml,<svg/>">
   <style>
     html{scroll-behavior:smooth}
+    .nav-check{position:absolute;opacity:0;pointer-events:none}
     :root{
       --bg:#0b1220; --panel:#101829; --muted:#0d1526; --text:#dbe6ff;
       --accent:#0AEFFF; --accent2:#00E68E; --line:rgba(10,239,255,.25)
@@ -112,53 +113,35 @@ EMBEDDED_TEMPLATE = """<!doctype html>
       .wrap{grid-template-columns:1fr}
       nav{display:none}
       .nav-toggle{display:inline-flex}
-      body.nav-open nav{display:block;position:fixed;top:64px;left:0;right:0;bottom:0;background:var(--panel);z-index:1000;overflow:auto;padding:10px}
-      body.nav-open .backdrop{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:900}
+      /* open state via checkbox */
+      .nav-check:checked ~ .wrap nav{display:block;position:fixed;top:64px;left:0;right:0;bottom:0;background:var(--panel);z-index:1000;overflow:auto;padding:10px}
+      .nav-check:checked ~ .backdrop{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:900}
       .logo-slot svg,.logo-slot img{height:36px}
     }
-    @media(max-width:480px){.logo-slot svg,.logo-slot img{height:28px}}
+    @media(max-width:480px){
+      .logo-slot svg,.logo-slot img{height:28px}
+    }}
   </style>
 </head>
 <body>
+  <input type="checkbox" id="navchk" class="nav-check" />
   <header>
-    <button class="nav-toggle" aria-label="Навигация" title="Навигация">☰</button>
+    <label for="navchk" class="nav-toggle" aria-label="Навигация" title="Навигация">☰</label>
     <div class="logo-slot" aria-label="brand"></div>
     <div class="header_query"></div>
   </header>
-  <div class="backdrop"></div>
+  <label for="navchk" class="backdrop"></label>
   <div class="wrap">
     <nav><ul class="navigation_ul"></ul></nav>
     <main><div class="databases"></div></main>
   </div>
-  <script>
-  (function(){
-    try{
-      var btn = document.querySelector('.nav-toggle');
-      var backdrop = document.querySelector('.backdrop');
-      var body = document.body;
-      var nav = document.querySelector('nav');
-      function close(){ body.classList.remove('nav-open'); }
-      if(btn){
-        btn.addEventListener('click', function(){ body.classList.toggle('nav-open'); });
-      }
-      if(backdrop){
-        backdrop.addEventListener('click', close);
-      }
-      if(nav){
-        nav.addEventListener('click', function(e){
-          var a = e.target.closest('a.navigation_link');
-          if(a){ close(); }
-        });
-      }
-    }catch(e){}
-  })();
-  </script>
 </body>
 </html>"""
 
 EMBEDDED_LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="260" viewBox="0 0 1200 260">
   <style>
-    html{scroll-behavior:smooth}.logo{font:700 128px/1 'Inter','Segoe UI','Roboto','Arial',sans-serif;letter-spacing:.5px}</style>
+    html{scroll-behavior:smooth}
+    .nav-check{position:absolute;opacity:0;pointer-events:none}.logo{font:700 128px/1 'Inter','Segoe UI','Roboto','Arial',sans-serif;letter-spacing:.5px}</style>
   <text class="logo" x="20" y="170" fill="#EAF2FF">
     P<tspan fill="#00E68E">3</tspan>rsona<tspan fill="#0AEFFF">Scan</tspan>
   </text>
