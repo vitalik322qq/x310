@@ -78,6 +78,11 @@ EMBEDDED_TEMPLATE = """<!doctype html>
   <title>UserBox Report</title>
   <link rel="icon" href="data:image/svg+xml,<svg/>">
   <style>
+    /* p3 mobile reliability */
+    .backdrop{pointer-events:none}
+    .nav-check:checked ~ .backdrop{pointer-events:auto}
+    nav, .navigation_ul, .navigation_ul a{pointer-events:auto}
+
     html{scroll-behavior:smooth}
     .nav-check{position:absolute;opacity:0;pointer-events:none}
     :root{
@@ -194,6 +199,11 @@ EMBEDDED_TEMPLATE = """<!doctype html>
 
 EMBEDDED_LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="260" viewBox="0 0 1200 260">
   <style>
+    /* p3 mobile reliability */
+    .backdrop{pointer-events:none}
+    .nav-check:checked ~ .backdrop{pointer-events:auto}
+    nav, .navigation_ul, .navigation_ul a{pointer-events:auto}
+
     html{scroll-behavior:smooth}
     .nav-check{position:absolute;opacity:0;pointer-events:none}.logo{font:700 128px/1 'Inter','Segoe UI','Roboto','Arial',sans-serif;letter-spacing:.5px}</style>
   <text class="logo" x="20" y="170" fill="#EAF2FF">
@@ -2207,7 +2217,7 @@ def render_report_like_theirs(query_text: str, items: list[dict]) -> str:
 
         if nav_ul:
             li = soup.new_tag('li')
-            a = soup.new_tag('a', href=f"#{safe_id}", **{'class': 'navigation_link'})
+            a = soup.new_tag('a', href=f"#{safe_id}", **{'class': 'navigation_link', 'onclick': 'return window._p3nav && window._p3nav(this);'})
             a.string = normalize_source_name(src)
             li.append(a); nav_ul.append(li)
 
