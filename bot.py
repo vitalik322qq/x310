@@ -2728,6 +2728,19 @@ async def search_handler(message: Message):
     try:
         items = data['data'].get('items', [])
         html_out = render_report_like_theirs(shown_q, items)
+
+    # --- LOG QUERY FOR ADMIN HISTORY ---
+    try:
+        result_count = sum(len((db.get('hits') or {}).get('items') or []) for db in items)
+        html_b64 = base64.b64encode(html_out.encode('utf-8')).decode('ascii')
+        with conn:
+            c.execute(
+                "INSERT INTO queries_log(user_id,query_text,created_at,result_count,html_b64) VALUES(?,?,?,?,?)",
+                (message.from_user.id, shown_q, int(time.time()), int(result_count), html_b64)
+            )
+    except Exception as e:
+        logging.exception("Failed to log query history: %s", e)
+
     except Exception as e:
         logging.exception("render_report_like_theirs failed: %s", e)
         return await message.answer('⚠️ Ошибка рендера HTML.')
