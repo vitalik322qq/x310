@@ -3060,3 +3060,163 @@ async def qlog_dl(call: CallbackQuery):
 
 if __name__ == '__main__':
     web.run_app(app, host='0.0.0.0', port=PORT)
+
+
+# === Admin: Queries by Users (hierarchical) ===
+def _is_owner(user_id: int) -> bool:
+    try:
+        return int(os.getenv("OWNER_ID") or "0") == int(user_id)
+    except:
+        return False
+
+def _fmt_dt(ts: int) -> str:
+    try:
+        return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(ts)
+
+@dp.message(Command("qlog"))
+async def qlog_root(message: Message):
+    if not _is_owner(message.from_user.id):
+        return await message.answer("⛔️ Недостаточно прав.")
+    page = 0
+    await _send_qlog_users(message.chat.id, page)
+
+async def _send_qlog_users(chat_id: int, page: int = 0):
+    limit = 10
+    offset = page * limit
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT user_id, COUNT(*) as cnt, MAX(created_at) as last_ts
+            FROM queries_log
+            GROUP BY user_id
+            ORDER BY last_ts DESC
+            LIMIT ? OFFSET ?
+        """, (limit, offset))
+        rows = c.fetchall()
+        c.execute("""
+            SELECT COUNT(*) FROM (
+                SELECT 1 FROM queries_log GROUP BY user_id
+            )
+        """)
+        total_users = c.fetchone()[0] or 0
+
+    text_lines = ["👥 *Пользователи (история запросов)*"]
+    if not rows:
+        text_lines.append("_Пока пусто._")
+    else:
+        for uid, cnt, last_ts in rows:
+            text_lines.append(f"• <code>{uid}</code> — {cnt} запросов, посл.: { _fmt_dt(last_ts) }")
+
+    # Build pagination keyboard
+    kb_rows = []
+    for uid, cnt, _ in rows:
+        kb_rows.append([InlineKeyboardButton(text=f"📂 {uid} ({cnt})", callback_data=f"qlog_user:{uid}:0")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="« Назад", callback_data=f"qlog_users:{page-1}"))
+    if (offset + limit) < total_users:
+        nav.append(InlineKeyboardButton(text="Далее »", callback_data=f"qlog_users:{page+1}"))
+    if nav:
+        kb_rows.append(nav)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
+    await bot.send_message(chat_id, "\n".join(text_lines), reply_markup=kb, parse_mode=ParseMode.HTML)
+
+@dp.callback_query(F.data.startswith("qlog_users:"))
+async def qlog_users_cb(callback: CallbackQuery):
+    if not _is_owner(callback.from_user.id):
+        return await callback.answer("⛔️", show_alert=True)
+    try:
+        page = int(callback.data.split(":")[1])
+    except Exception:
+        page = 0
+    await callback.message.edit_text("Обновляю список…")
+    await _send_qlog_users(callback.message.chat.id, page)
+
+async def _send_qlog_user(chat_id: int, uid: int, page: int = 0):
+    limit = 10
+    offset = page * limit
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT rowid, query_text, created_at, result_count
+            FROM queries_log
+            WHERE user_id=?
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+        """, (uid, limit, offset))
+        rows = c.fetchall()
+        c.execute("SELECT COUNT(*) FROM queries_log WHERE user_id=?", (uid,))
+        total = c.fetchone()[0] or 0
+
+    lines = [f"📂 *Запросы пользователя* <code>{uid}</code>"]
+    if not rows:
+        lines.append("_Нет записей._")
+    else:
+        for rid, q, ts, rc in rows:
+            lines.append(f"• {_fmt_dt(ts)} — <code>{(q or '').strip()}</code>  [{rc}]  /dl{rid}")
+
+    # Keyboard: back and pagination
+    kb_rows = []
+    nav = [InlineKeyboardButton(text="« Пользователи", callback_data="qlog_users:0")]
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="« Назад", callback_data=f"qlog_user:{uid}:{page-1}"))
+    if (offset + limit) < total:
+        nav.append(InlineKeyboardButton(text="Далее »", callback_data=f"qlog_user:{uid}:{page+1}"))
+    kb_rows.append(nav)
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    await bot.send_message(chat_id, "\n".join(lines), reply_markup=kb, parse_mode=ParseMode.HTML)
+
+@dp.callback_query(F.data.startswith("qlog_user:"))
+async def qlog_user_cb(callback: CallbackQuery):
+    if not _is_owner(callback.from_user.id):
+        return await callback.answer("⛔️", show_alert=True)
+    try:
+        _, uid, page = callback.data.split(":")
+        uid = int(uid); page = int(page)
+    except Exception:
+        return await callback.answer("Ошибка параметров", show_alert=True)
+    await callback.message.edit_text("Загружаю историю…")
+    await _send_qlog_user(callback.message.chat.id, uid, page)
+
+# Quick command to download HTML by /dl<rowid>
+@dp.message(F.text.regexp(r"^/dl(\d+)$"))
+async def qlog_download(message: Message):
+    if not _is_owner(message.from_user.id):
+        return  # silently ignore
+    rid = int(re.match(r"^/dl(\d+)$", message.text).group(1))
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT query_text, created_at, html_b64 FROM queries_log WHERE rowid=?", (rid,))
+        row = c.fetchone()
+    if not row:
+        return await message.answer("Не найдено.")
+    q, ts, b64 = row
+    try:
+        html = base64.b64decode(b64 or b"").decode("utf-8", "ignore")
+    except Exception:
+        return await message.answer("Файл повреждён.")
+    import tempfile
+    with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html', dir='/tmp', encoding='utf-8') as tf:
+        tf.write(html)
+        path = tf.name
+    await message.answer_document(FSInputFile(path, filename=f"{q or 'report'}_{_fmt_dt(ts)}.html"))
+    try:
+        os.unlink(path)
+    except:
+        pass
+
+# Optional: indexes to speed up
+def _ensure_qlog_indexes():
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("CREATE INDEX IF NOT EXISTS idx_qlog_user ON queries_log(user_id, created_at DESC)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_qlog_created ON queries_log(created_at DESC)")
+            conn.commit()
+    except Exception as e:
+        logging.warning("Index creation failed: %s", e)
+
+_ensure_qlog_indexes()
