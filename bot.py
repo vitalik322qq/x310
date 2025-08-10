@@ -2728,6 +2728,11 @@ async def search_handler(message: Message):
     try:
         items = data['data'].get('items', [])
         html_out = render_report_like_theirs(shown_q, items)
+    except Exception as e:
+        logging.exception("render_report_like_theirs failed: %s", e)
+        return await message.answer('⚠️ Ошибка рендера HTML.')
+
+
 
     # --- LOG QUERY FOR ADMIN HISTORY ---
     try:
@@ -2740,10 +2745,6 @@ async def search_handler(message: Message):
             )
     except Exception as e:
         logging.exception("Failed to log query history: %s", e)
-
-    except Exception as e:
-        logging.exception("render_report_like_theirs failed: %s", e)
-        return await message.answer('⚠️ Ошибка рендера HTML.')
 
     with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html', dir='/tmp', encoding='utf-8') as tf:
         tf.write(html_out)
