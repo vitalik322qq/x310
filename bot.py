@@ -3069,6 +3069,8 @@ def _is_owner(user_id: int) -> bool:
     except:
         return False
 
+PERIODS_QLOG = [('7d', 7), ('30d', 30), ('all', None)]
+
 def _fmt_dt(ts: int) -> str:
     try:
         return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M")
@@ -3082,24 +3084,46 @@ async def qlog_root(message: Message):
     page = 0
     await _send_qlog_users(message.chat.id, page)
 
-async def _send_qlog_users(chat_id: int, page: int = 0):
+async def _send_qlog_users(chat_id: int, page: int = 0, period_key: str = '30d'):
     limit = 10
     offset = page * limit
+    cutoff = None
+    days = next((d for k,d in PERIODS_QLOG if k == period_key), None)
+    if days:
+        cutoff = int(time.time()) - days*86400
+
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
-        c.execute("""
-            SELECT user_id, COUNT(*) as cnt, MAX(created_at) as last_ts
-            FROM queries_log
-            GROUP BY user_id
-            ORDER BY last_ts DESC
-            LIMIT ? OFFSET ?
-        """, (limit, offset))
+        if cutoff:
+            c.execute("""
+                SELECT user_id, COUNT(*) as cnt, MAX(created_at) as last_ts
+                FROM queries_log
+                WHERE created_at >= ?
+                GROUP BY user_id
+                ORDER BY last_ts DESC
+                LIMIT ? OFFSET ?
+            """, (cutoff, limit, offset))
+        else:
+            c.execute("""
+                SELECT user_id, COUNT(*) as cnt, MAX(created_at) as last_ts
+                FROM queries_log
+                GROUP BY user_id
+                ORDER BY last_ts DESC
+                LIMIT ? OFFSET ?
+            """, (limit, offset))
         rows = c.fetchall()
-        c.execute("""
-            SELECT COUNT(*) FROM (
-                SELECT 1 FROM queries_log GROUP BY user_id
-            )
-        """)
+        if cutoff:
+            c.execute("""
+                SELECT COUNT(*) FROM (
+                    SELECT 1 FROM queries_log WHERE created_at >= ? GROUP BY user_id
+                )
+            """, (cutoff,))
+        else:
+            c.execute("""
+                SELECT COUNT(*) FROM (
+                    SELECT 1 FROM queries_log GROUP BY user_id
+                )
+            """)
         total_users = c.fetchone()[0] or 0
 
     text_lines = ["👥 *Пользователи (история запросов)*"]
@@ -3111,8 +3135,10 @@ async def _send_qlog_users(chat_id: int, page: int = 0):
 
     # Build pagination keyboard
     kb_rows = []
+    period_row = [InlineKeyboardButton(text=('✅ ' if k==period_key else '') + k, callback_data=f"qlog_users:{page}:{k}") for k,_ in PERIODS_QLOG]
+    kb_rows.append(period_row)
     for uid, cnt, _ in rows:
-        kb_rows.append([InlineKeyboardButton(text=f"📂 {uid} ({cnt})", callback_data=f"qlog_user:{uid}:0")])
+        kb_rows.append([InlineKeyboardButton(text=f"📂 {uid} ({cnt})", callback_data=f"qlog_user:{uid}:0:{period_key}")])
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(text="« Назад", callback_data=f"qlog_users:{page-1}"))
@@ -3128,27 +3154,42 @@ async def _send_qlog_users(chat_id: int, page: int = 0):
 async def qlog_users_cb(callback: CallbackQuery):
     if not _is_owner(callback.from_user.id):
         return await callback.answer("⛔️", show_alert=True)
-    try:
-        page = int(callback.data.split(":")[1])
-    except Exception:
-        page = 0
+    parts = callback.data.split(":")
+    page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    period = parts[2] if len(parts) > 2 else '30d'
     await callback.message.edit_text("Обновляю список…")
-    await _send_qlog_users(callback.message.chat.id, page)
+    await _send_qlog_users(callback.message.chat.id, page, period)
 
-async def _send_qlog_user(chat_id: int, uid: int, page: int = 0):
+async def _send_qlog_user(chat_id: int, uid: int, page: int = 0, period_key: str = '30d'):
     limit = 10
     offset = page * limit
+    cutoff = None
+    days = next((d for k,d in PERIODS_QLOG if k == period_key), None)
+    if days:
+        cutoff = int(time.time()) - days*86400
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
-        c.execute("""
-            SELECT rowid, query_text, created_at, result_count
-            FROM queries_log
-            WHERE user_id=?
-            ORDER BY created_at DESC
-            LIMIT ? OFFSET ?
-        """, (uid, limit, offset))
+        if cutoff:
+            c.execute("""
+                SELECT rowid, query_text, created_at, result_count
+                FROM queries_log
+                WHERE user_id=? AND created_at >= ?
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+            """, (uid, cutoff, limit, offset))
+        else:
+            c.execute("""
+                SELECT rowid, query_text, created_at, result_count
+                FROM queries_log
+                WHERE user_id=?
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+            """, (uid, limit, offset))
         rows = c.fetchall()
-        c.execute("SELECT COUNT(*) FROM queries_log WHERE user_id=?", (uid,))
+        if cutoff:
+            c.execute("SELECT COUNT(*) FROM queries_log WHERE user_id=? AND created_at >= ?", (uid, cutoff))
+        else:
+            c.execute("SELECT COUNT(*) FROM queries_log WHERE user_id=?", (uid,))
         total = c.fetchone()[0] or 0
 
     lines = [f"📂 *Запросы пользователя* <code>{uid}</code>"]
@@ -3160,11 +3201,11 @@ async def _send_qlog_user(chat_id: int, uid: int, page: int = 0):
 
     # Keyboard: back and pagination
     kb_rows = []
-    nav = [InlineKeyboardButton(text="« Пользователи", callback_data="qlog_users:0")]
+    nav = [InlineKeyboardButton(text="« Пользователи", callback_data=f"qlog_users:0:{period_key}")]
     if page > 0:
-        nav.append(InlineKeyboardButton(text="« Назад", callback_data=f"qlog_user:{uid}:{page-1}"))
+        nav.append(InlineKeyboardButton(text="« Назад", callback_data=f"qlog_user:{uid}:{page-1}:{period_key}"))
     if (offset + limit) < total:
-        nav.append(InlineKeyboardButton(text="Далее »", callback_data=f"qlog_user:{uid}:{page+1}"))
+        nav.append(InlineKeyboardButton(text="Далее »", callback_data=f"qlog_user:{uid}:{page+1}:{period_key}"))
     kb_rows.append(nav)
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     await bot.send_message(chat_id, "\n".join(lines), reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -3174,12 +3215,12 @@ async def qlog_user_cb(callback: CallbackQuery):
     if not _is_owner(callback.from_user.id):
         return await callback.answer("⛔️", show_alert=True)
     try:
-        _, uid, page = callback.data.split(":")
-        uid = int(uid); page = int(page)
+        parts = callback.data.split(":")
+        uid = int(parts[1]); page = int(parts[2]); period = parts[3] if len(parts) > 3 else '30d'
     except Exception:
         return await callback.answer("Ошибка параметров", show_alert=True)
     await callback.message.edit_text("Загружаю историю…")
-    await _send_qlog_user(callback.message.chat.id, uid, page)
+    await _send_qlog_user(callback.message.chat.id, uid, page, period)
 
 # Quick command to download HTML by /dl<rowid>
 @dp.message(F.text.regexp(r"^/dl(\d+)$"))
@@ -3220,3 +3261,11 @@ def _ensure_qlog_indexes():
         logging.warning("Index creation failed: %s", e)
 
 _ensure_qlog_indexes()
+
+
+@dp.callback_query(F.data == "qlog_menu")
+async def qlog_menu_cb(callback: CallbackQuery):
+    if not _is_owner(callback.from_user.id):
+        return await callback.answer("⛔️", show_alert=True)
+    await callback.message.edit_text("Открываю историю запросов…")
+    await _send_qlog_users(callback.message.chat.id, 0, '30d')
