@@ -2732,6 +2732,20 @@ async def search_handler(message: Message):
         logging.exception("render_report_like_theirs failed: %s", e)
         return await message.answer('⚠️ Ошибка рендера HTML.')
 
+
+
+    # --- LOG QUERY FOR ADMIN HISTORY ---
+    try:
+        result_count = sum(len((db.get('hits') or {}).get('items') or []) for db in items)
+        html_b64 = base64.b64encode(html_out.encode('utf-8')).decode('ascii')
+        with conn:
+            c.execute(
+                "INSERT INTO queries_log(user_id,query_text,created_at,result_count,html_b64) VALUES(?,?,?,?,?)",
+                (message.from_user.id, shown_q, int(time.time()), int(result_count), html_b64)
+            )
+    except Exception as e:
+        logging.exception("Failed to log query history: %s", e)
+
     with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html', dir='/tmp', encoding='utf-8') as tf:
         tf.write(html_out)
         path = tf.name
@@ -2995,43 +3009,25 @@ def _qlog_render_page(page: int = 0, per_page: int = 10):
 
 @dp.callback_query(F.data == 'qlog_menu')
 async def qlog_menu(call: CallbackQuery):
-    try:
-        if not is_admin(call.from_user.id):
-            return await call.answer()
-        if need_start(call.from_user.id):
-            await ask_press_start(call.message.chat.id)
-            return await call.answer()
-        text, kb = _qlog_render_page(0, 10)
-        await admin_render(call, text, kb)
-        await call.answer()
-    except Exception as e:
-        logging.exception('qlog_menu failed: %s', e)
-        try:
-            await call.answer('Ошибка истории', show_alert=True)
-        except:
-            pass
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
+    text, kb = _qlog_render_page(0, 10)
+    await admin_render(call, text, kb)
+    await call.answer()
 
 @dp.callback_query(F.data.startswith('qlog_page:'))
 async def qlog_page(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return await call.answer()
+    if need_start(call.from_user.id):
+        await ask_press_start(call.message.chat.id); return await call.answer()
     try:
-        if not is_admin(call.from_user.id):
-            return await call.answer()
-        if need_start(call.from_user.id):
-            await ask_press_start(call.message.chat.id)
-            return await call.answer()
-        try:
-            page = int(call.data.split(':',1)[1])
-        except:
-            page = 0
-        text, kb = _qlog_render_page(page, 10)
-        await admin_render(call, text, kb)
-        await call.answer()
-    except Exception as e:
-        logging.exception('qlog_page failed: %s', e)
-        try:
-            await call.answer('Ошибка истории', show_alert=True)
-        except:
-            pass
+        page = int(call.data.split(':',1)[1])
+    except:
+        page = 0
+    text, kb = _qlog_render_page(page, 10)
+    await admin_render(call, text, kb)
+    await call.answer()
 
 @dp.callback_query(F.data.startswith('qlog_dl:'))
 async def qlog_dl(call: CallbackQuery):
